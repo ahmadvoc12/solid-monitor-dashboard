@@ -1,0 +1,9 @@
+{
+  "client_id": "https://project-personal-agent-repo.vercel.app/solid-app-client-id.json",
+  "client_name": "My Solid App",
+  "redirect_uris": ["https://project-personal-agent-repo.vercel.app/callback"],
+  "grant_types": ["authorization_code", "refresh_token"],
+  "response_types": ["code"],
+  "scope": "openid webid",
+  "token_endpoint_auth_method": "none"
+}
