@@ -45,7 +45,7 @@ this element using template horizon ai free template. You can read more about th
 
 ### Quick Start
 
-Install Dike-chat running either of the following:
+Install Solid Monitoring App running either of the following:
 
 - Install NodeJS LTS from [NodeJs Official Page]
 
