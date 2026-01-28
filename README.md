@@ -1,16 +1,40 @@
-# Dike-Chat
+# Solid Monitoring App
 
-Get started with **Dike-Chat** — a personal AI chat app that lets you **seamlessly switch between multiple LLMs** while keeping your data **decentralized and user-owned via Solid Pods** — built on top of the innovative **Horizon AI Template** for Next.js & React.
+Solid Monitoring App is a web-based application designed to monitor and analyze application activities that access user data stored in Solid Pods.
+The app aims to improve data transparency, user control, and trust within the Solid ecosystem.
+
+Built with Next.js & React on top of the Horizon AI Free Template, this application provides an interactive monitoring dashboard to visualize and manage Solid Pod access logs in a clear and user-friendly manner.
 
 ---
 
 ## ✨ Key Features
 
-- **Switchable LLMs**: Change the underlying model (e.g., OpenAI, etc.) within the same session without page reload.
-- **Decentralized Storage (Solid)**: Store chat sessions in your **Solid Pod**; you own your data.
-- **Modern UI**: Powered by the **Horizon AI Free Template** for a sleek, responsive interface.
-- **TypeScript + Next.js 13+**: App Router ready, client-side auth with `@inrupt/solid-client-authn-browser`.
+Solid Pod Access Monitoring
+Track which applications access user data stored in Solid Pods.
 
+Activity Log Dashboard
+An interactive dashboard to inspect:
+
+Access timestamps
+
+Accessing applications
+
+Accessed resources
+
+Operation types (read / write / update)
+
+Decentralized & User-Owned Data
+All activity logs are stored in the user’s own Solid Pod, not on centralized servers.
+
+Modern Dashboard UI
+Powered by the Horizon AI Free Template for a sleek and responsive interface.
+
+Next.js 13+ & TypeScript
+App Router–ready architecture using modern web standards.
+
+Solid Authentication (OIDC)
+Client-side authentication via
+@inrupt/solid-client-authn-browser.
 ---
 
 
@@ -28,7 +52,7 @@ Install Dike-chat running either of the following:
 Clone the repository with the following command:
 
 ```bash
-git clone https://github.com/ahmadvoc12/project-personal-agent-repo
+git clone https://github.com/ahmadvoc12/solid-monitor-dashboard
 ```
 
 Run in the terminal this command:
@@ -49,19 +73,6 @@ To running in your local server using
 npm start
 ```
 
-to create local environment you can modified your own server
-# --- App base URL (for Next.js, e.g. http://localhost:3000) ---
-NEXT_PUBLIC_APP_URL=
 
-# --- Solid OIDC Issuer (your provider) ---
-NEXT_PUBLIC_SOLID_OIDC_ISSUER=
-
-# Optional: default login issuer shown in UI
-NEXT_PUBLIC_DEFAULT_IDP=
-
-# --- LLM keys (example: OpenAI) ---
-OPENAI_API_KEY=
-
-# (If you support multiple LLMs, add their keys here as well)
 
 
