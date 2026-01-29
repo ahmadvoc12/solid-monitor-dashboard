@@ -9,16 +9,11 @@ import {
   Flex,
   Divider,
   Badge,
-  Input,
-  Select,
-  Stack,
-  IconButton,
-  Collapse
+  VStack,
+  Tag
 } from '@chakra-ui/react';
 
-import { SearchIcon, ChevronDownIcon, ChevronUpIcon } from '@chakra-ui/icons';
-
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useSolidSession } from '@/contexts/SolidSessionContext';
 
@@ -26,31 +21,41 @@ import {
   getSolidDataset,
   getThingAll,
   getUrlAll,
-  getUrl,
   getDatetime,
-  getStringNoLocale,
-  getPodUrlAll
+  getPodUrlAll,
+  getStringNoLocaleAll
 } from '@inrupt/solid-client';
 
 /* ======================================================
-   CONSTANTS (DPV CORE)
+   CONSTANTS
 ====================================================== */
 const DPV = 'https://w3id.org/dpv#';
 const DCT = 'http://purl.org/dc/terms/';
-const EX = 'https://example.org/solid/audit#';
+const EX  = 'https://example.org/solid/audit#';
 
 /* ======================================================
    TYPES
 ====================================================== */
 type AuditLog = {
-  id: string;
   app: string;
-  created: Date;
+  created: string;
   sensitive: boolean;
-  resource: string;
   personalData: string[];
   values: string[];
 };
+
+/* ======================================================
+   HELPERS
+====================================================== */
+function extractAppFromResource(resource: string) {
+  const idx = resource.indexOf('/public/health-records/');
+  if (idx === -1) return resource;
+  return resource.substring(0, idx + '/public/health-records/'.length);
+}
+
+function shortIri(iri: string) {
+  return iri.split('#').pop() ?? iri;
+}
 
 /* ======================================================
    PAGE
@@ -62,14 +67,6 @@ export default function AuditDashboardPage() {
 
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(true);
-
-  /* Filters */
-  const [search, setSearch] = useState('');
-  const [sensitivityFilter, setSensitivityFilter] = useState<'all' | 'sensitive' | 'normal'>('all');
-  const [appFilter, setAppFilter] = useState('all');
-
-  /* UI */
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   /* =========================
      AUTH
@@ -100,47 +97,34 @@ export default function AuditDashboardPage() {
         const parsed: AuditLog[] = [];
 
         getThingAll(dataset).forEach(thing => {
-          const id = thing.url;
-
-          const app =
-            getUrl(thing, `${DPV}hasDataController`) ??
-            'Unknown application';
+          const resources = getUrlAll(thing, `${DPV}hasResource`);
+          const categories = getUrlAll(thing, `${DPV}hasDataCategory`);
+          const personalData = getUrlAll(thing, `${DPV}hasPersonalData`);
+          const values = getStringNoLocaleAll(thing, `${EX}hasDataValue`);
 
           const created =
-            getDatetime(thing, `${DCT}created`) ?? new Date(0);
-
-          const resource =
-            getUrl(thing, `${DPV}hasResource`) ?? '-';
-
-          const personalData =
-            getUrlAll(thing, `${DPV}hasPersonalData`);
-
-          const categories =
-            getUrlAll(thing, `${DPV}hasDataCategory`);
-
-          const values =
-            getStringNoLocale(thing, `${EX}hasDataValue`)
-              ? [getStringNoLocale(thing, `${EX}hasDataValue`)!]
-              : [];
+            getDatetime(thing, `${DCT}created`)?.toISOString() ?? '-';
 
           const sensitive =
             categories.some(c =>
-              c.includes('Sensitive') ||
-              c.includes('SpecialCategory')
+              c.includes('Sensitive') || c.includes('Special')
             );
 
+          const app =
+            resources.length > 0
+              ? extractAppFromResource(resources[0])
+              : 'Unknown application';
+
           parsed.push({
-            id,
             app,
             created,
             sensitive,
-            resource,
-            personalData,
+            personalData: personalData.map(shortIri),
             values
           });
         });
 
-        setLogs(parsed.sort((a, b) => b.created.getTime() - a.created.getTime()));
+        setLogs(parsed.reverse());
       } catch (err) {
         console.error(err);
         toast({
@@ -156,44 +140,6 @@ export default function AuditDashboardPage() {
   }, [session, toast]);
 
   /* =========================
-     DERIVED FILTERS
-  ========================= */
-  const apps = useMemo(
-    () => Array.from(new Set(logs.map(l => l.app))),
-    [logs]
-  );
-
-  const filteredLogs = useMemo(() => {
-    return logs.filter(log => {
-      if (
-        sensitivityFilter === 'sensitive' &&
-        !log.sensitive
-      ) return false;
-
-      if (
-        sensitivityFilter === 'normal' &&
-        log.sensitive
-      ) return false;
-
-      if (
-        appFilter !== 'all' &&
-        log.app !== appFilter
-      ) return false;
-
-      if (search) {
-        const q = search.toLowerCase();
-        return (
-          log.app.toLowerCase().includes(q) ||
-          log.resource.toLowerCase().includes(q) ||
-          log.personalData.join(' ').toLowerCase().includes(q)
-        );
-      }
-
-      return true;
-    });
-  }, [logs, search, sensitivityFilter, appFilter]);
-
-  /* =========================
      UI
   ========================= */
   return (
@@ -207,132 +153,70 @@ export default function AuditDashboardPage() {
 
       <Divider mb={6} />
 
-      {/* FILTER BAR */}
-      <Stack
-        direction={{ base: 'column', md: 'row' }}
-        spacing={3}
-        mb={6}
-      >
-        <Input
-          placeholder="Search app, resource, or personal data…"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-        />
-
-        <Select
-          value={sensitivityFilter}
-          onChange={e =>
-            setSensitivityFilter(e.target.value as any)
-          }
-        >
-          <option value="all">All data</option>
-          <option value="sensitive">Sensitive only</option>
-          <option value="normal">Non-sensitive only</option>
-        </Select>
-
-        <Select
-          value={appFilter}
-          onChange={e => setAppFilter(e.target.value)}
-        >
-          <option value="all">All applications</option>
-          {apps.map(a => (
-            <option key={a} value={a}>
-              {a}
-            </option>
-          ))}
-        </Select>
-      </Stack>
-
       {loading && <Spinner />}
 
-      {!loading && filteredLogs.length === 0 && (
+      {!loading && logs.length === 0 && (
         <Text>No audit logs found.</Text>
       )}
 
-      <SimpleGrid columns={{ base: 1, md: 2 }} spacing={4}>
-        {filteredLogs.map(log => {
-          const isOpen = expanded[log.id];
-
-          return (
-            <Box
-              key={log.id}
-              p={4}
-              borderRadius="md"
-              boxShadow="md"
-              bg={log.sensitive ? 'red.50' : 'green.50'}
-              borderLeft="6px solid"
-              borderColor={log.sensitive ? 'red.400' : 'green.400'}
-            >
-              <Flex justify="space-between" align="center">
-                <Text fontWeight="bold">
-                  {log.app}
-                </Text>
-                <IconButton
-                  aria-label="toggle"
-                  size="sm"
-                  icon={isOpen ? <ChevronUpIcon /> : <ChevronDownIcon />}
-                  onClick={() =>
-                    setExpanded(p => ({
-                      ...p,
-                      [log.id]: !p[log.id]
-                    }))
-                  }
-                />
-              </Flex>
-
-              <Text fontSize="sm" mt={1}>
-                <b>Access time:</b> {log.created.toISOString()}
+      <SimpleGrid columns={{ base: 1, md: 2 }} spacing={5}>
+        {logs.map((log, i) => (
+          <Box
+            key={i}
+            p={5}
+            borderRadius="md"
+            boxShadow="md"
+            bg={log.sensitive ? 'red.50' : 'green.50'}
+            borderLeft="6px solid"
+            borderColor={log.sensitive ? 'red.400' : 'green.400'}
+          >
+            <VStack align="start" spacing={2}>
+              <Text fontWeight="bold">Application</Text>
+              <Text fontSize="sm" wordBreak="break-all">
+                {log.app}
               </Text>
 
-              <Badge
-                mt={2}
-                colorScheme={log.sensitive ? 'red' : 'green'}
-              >
+              <Text>
+                <b>Access time:</b><br />
+                {log.created}
+              </Text>
+
+              <Badge colorScheme={log.sensitive ? 'red' : 'green'}>
                 {log.sensitive
                   ? 'Sensitive Personal Data'
                   : 'Non-Sensitive Data'}
               </Badge>
 
-              <Collapse in={isOpen} animateOpacity>
-                <Box mt={4}>
-                  <Text fontSize="sm">
-                    <b>Resource:</b>
-                    <br />
-                    {log.resource}
+              {log.personalData.length > 0 && (
+                <>
+                  <Text fontWeight="bold" pt={2}>
+                    Data Accessed
                   </Text>
+                  <Flex wrap="wrap" gap={2}>
+                    {log.personalData.map((pd, idx) => (
+                      <Tag key={idx} colorScheme="blue">
+                        {pd}
+                      </Tag>
+                    ))}
+                  </Flex>
+                </>
+              )}
 
-                  <Text fontSize="sm" mt={2}>
-                    <b>Personal data accessed:</b>
+              {log.values.length > 0 && (
+                <>
+                  <Text fontWeight="bold" pt={2}>
+                    Values
                   </Text>
-
-                  {log.personalData.map(pd => (
-                    <Badge
-                      key={pd}
-                      mr={2}
-                      mt={1}
-                      colorScheme="blue"
-                    >
-                      {pd.split('#').pop()}
-                    </Badge>
+                  {log.values.map((v, idx) => (
+                    <Text key={idx} fontSize="sm">
+                      • {v}
+                    </Text>
                   ))}
-
-                  {log.values.length > 0 && (
-                    <>
-                      <Text fontSize="sm" mt={2}>
-                        <b>Values:</b>
-                      </Text>
-                      {log.values.map((v, i) => (
-                        <Text key={i} fontSize="sm">
-                          • {v}
-                        </Text>
-                      ))}
-                    </>
-                  )}
-                </Box>
-              </Collapse>
-            </Box>
-          );
-        })}
+                </>
+              )}
+            </VStack>
+          </Box>
+        ))}
       </SimpleGrid>
     </Box>
   );
