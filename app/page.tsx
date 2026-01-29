@@ -10,10 +10,13 @@ import {
   Divider,
   Badge,
   VStack,
-  Tag
+  Tag,
+  Input,
+  Select,
+  HStack
 } from '@chakra-ui/react';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useSolidSession } from '@/contexts/SolidSessionContext';
 
@@ -39,6 +42,7 @@ const EX  = 'https://example.org/solid/audit#';
 type AuditLog = {
   app: string;
   created: string;
+  createdAt: Date | null;
   sensitive: boolean;
   personalData: string[];
   values: string[];
@@ -48,13 +52,19 @@ type AuditLog = {
    HELPERS
 ====================================================== */
 function extractAppFromResource(resource: string) {
-  const idx = resource.indexOf('/public/health-records/');
+  const idx = resource.indexOf('/public/');
   if (idx === -1) return resource;
-  return resource.substring(0, idx + '/public/health-records/'.length);
+  return resource.substring(0, idx + 8);
 }
 
 function shortIri(iri: string) {
   return iri.split('#').pop() ?? iri;
+}
+
+function isWithinDays(date: Date, days: number) {
+  const now = new Date();
+  const diff = now.getTime() - date.getTime();
+  return diff <= days * 24 * 60 * 60 * 1000;
 }
 
 /* ======================================================
@@ -67,6 +77,12 @@ export default function AuditDashboardPage() {
 
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(true);
+
+  /* ===== FILTER STATE ===== */
+  const [search, setSearch] = useState('');
+  const [sensitivity, setSensitivity] = useState<'all' | 'sensitive' | 'normal'>('all');
+  const [dateFilter, setDateFilter] = useState<'all' | 'today' | '7' | '30'>('all');
+  const [appFilter, setAppFilter] = useState<string>('all');
 
   /* =========================
      AUTH
@@ -102,8 +118,7 @@ export default function AuditDashboardPage() {
           const personalData = getUrlAll(thing, `${DPV}hasPersonalData`);
           const values = getStringNoLocaleAll(thing, `${EX}hasDataValue`);
 
-          const created =
-            getDatetime(thing, `${DCT}created`)?.toISOString() ?? '-';
+          const createdDt = getDatetime(thing, `${DCT}created`) ?? null;
 
           const sensitive =
             categories.some(c =>
@@ -113,11 +128,12 @@ export default function AuditDashboardPage() {
           const app =
             resources.length > 0
               ? extractAppFromResource(resources[0])
-              : 'Unknown application';
+              : 'Unknown';
 
           parsed.push({
             app,
-            created,
+            created: createdDt?.toISOString() ?? '-',
+            createdAt: createdDt,
             sensitive,
             personalData: personalData.map(shortIri),
             values
@@ -140,6 +156,42 @@ export default function AuditDashboardPage() {
   }, [session, toast]);
 
   /* =========================
+     FILTERED LOGS
+  ========================= */
+  const apps = useMemo(
+    () => Array.from(new Set(logs.map(l => l.app))),
+    [logs]
+  );
+
+  const filteredLogs = useMemo(() => {
+    return logs.filter(log => {
+      // sensitivity
+      if (sensitivity === 'sensitive' && !log.sensitive) return false;
+      if (sensitivity === 'normal' && log.sensitive) return false;
+
+      // app
+      if (appFilter !== 'all' && log.app !== appFilter) return false;
+
+      // date
+      if (dateFilter !== 'all' && log.createdAt) {
+        if (dateFilter === 'today' && !isWithinDays(log.createdAt, 1)) return false;
+        if (dateFilter === '7' && !isWithinDays(log.createdAt, 7)) return false;
+        if (dateFilter === '30' && !isWithinDays(log.createdAt, 30)) return false;
+      }
+
+      // search
+      const q = search.toLowerCase();
+      if (!q) return true;
+
+      return (
+        log.app.toLowerCase().includes(q) ||
+        log.personalData.some(p => p.toLowerCase().includes(q)) ||
+        log.values.some(v => v.toLowerCase().includes(q))
+      );
+    });
+  }, [logs, search, sensitivity, dateFilter, appFilter]);
+
+  /* =========================
      UI
   ========================= */
   return (
@@ -153,14 +205,47 @@ export default function AuditDashboardPage() {
 
       <Divider mb={6} />
 
+      {/* FILTER BAR */}
+      <VStack spacing={4} mb={6} align="stretch">
+        <Input
+          placeholder="Search application, data, or value..."
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+        />
+
+        <HStack spacing={4} wrap="wrap">
+          <Select value={sensitivity} onChange={e => setSensitivity(e.target.value as any)}>
+            <option value="all">All Data</option>
+            <option value="sensitive">Sensitive Only</option>
+            <option value="normal">Non-Sensitive Only</option>
+          </Select>
+
+          <Select value={dateFilter} onChange={e => setDateFilter(e.target.value as any)}>
+            <option value="all">All Dates</option>
+            <option value="today">Today</option>
+            <option value="7">Last 7 Days</option>
+            <option value="30">Last 30 Days</option>
+          </Select>
+
+          <Select value={appFilter} onChange={e => setAppFilter(e.target.value)}>
+            <option value="all">All Applications</option>
+            {apps.map(app => (
+              <option key={app} value={app}>
+                {app}
+              </option>
+            ))}
+          </Select>
+        </HStack>
+      </VStack>
+
       {loading && <Spinner />}
 
-      {!loading && logs.length === 0 && (
-        <Text>No audit logs found.</Text>
+      {!loading && filteredLogs.length === 0 && (
+        <Text>No audit logs match the selected filters.</Text>
       )}
 
       <SimpleGrid columns={{ base: 1, md: 2 }} spacing={5}>
-        {logs.map((log, i) => (
+        {filteredLogs.map((log, i) => (
           <Box
             key={i}
             p={5}
@@ -176,7 +261,7 @@ export default function AuditDashboardPage() {
                 {log.app}
               </Text>
 
-              <Text>
+              <Text fontSize="sm">
                 <b>Access time:</b><br />
                 {log.created}
               </Text>
