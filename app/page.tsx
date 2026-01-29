@@ -40,7 +40,7 @@ const EX  = 'https://example.org/solid/audit#';
    TYPES
 ====================================================== */
 type AuditLog = {
-  app: string;
+  app: string;                 // 👉 health-records
   created: string;
   createdAt: Date | null;
   sensitive: boolean;
@@ -51,10 +51,26 @@ type AuditLog = {
 /* ======================================================
    HELPERS
 ====================================================== */
-function extractAppFromResource(resource: string) {
-  const idx = resource.indexOf('/public/');
-  if (idx === -1) return resource;
-  return resource.substring(0, idx + 8);
+
+/**
+ * Dari:
+ * http://localhost:3001/ayobisa2/public/health-records/record-xxx.ttl
+ * ➜ "health-records"
+ */
+function extractAppFromResource(resource: string): string {
+  try {
+    const url = new URL(resource);
+    const segments = url.pathname.split('/').filter(Boolean);
+
+    const publicIdx = segments.indexOf('public');
+    if (publicIdx !== -1 && segments[publicIdx + 1]) {
+      return segments[publicIdx + 1];
+    }
+
+    return segments[segments.length - 1];
+  } catch {
+    return 'Unknown';
+  }
 }
 
 function shortIri(iri: string) {
@@ -78,22 +94,20 @@ export default function AuditDashboardPage() {
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(true);
 
-  /* ===== FILTER STATE ===== */
+  /* ================= FILTER STATE ================= */
   const [search, setSearch] = useState('');
-  const [sensitivity, setSensitivity] = useState<'all' | 'sensitive' | 'normal'>('all');
-  const [dateFilter, setDateFilter] = useState<'all' | 'today' | '7' | '30'>('all');
+  const [sensitivity, setSensitivity] =
+    useState<'all' | 'sensitive' | 'normal'>('all');
+  const [dateFilter, setDateFilter] =
+    useState<'all' | 'today' | '7' | '30'>('all');
   const [appFilter, setAppFilter] = useState<string>('all');
 
-  /* =========================
-     AUTH
-  ========================= */
+  /* ================= AUTH ================= */
   useEffect(() => {
     if (!isLoggedIn) router.replace('/sign-in');
   }, [isLoggedIn, router]);
 
-  /* =========================
-     LOAD AUDIT LOG
-  ========================= */
+  /* ================= LOAD AUDIT LOG ================= */
   useEffect(() => {
     if (!session?.info?.webId) return;
 
@@ -155,9 +169,7 @@ export default function AuditDashboardPage() {
     })();
   }, [session, toast]);
 
-  /* =========================
-     FILTERED LOGS
-  ========================= */
+  /* ================= FILTERED LOGS ================= */
   const apps = useMemo(
     () => Array.from(new Set(logs.map(l => l.app))),
     [logs]
@@ -165,21 +177,17 @@ export default function AuditDashboardPage() {
 
   const filteredLogs = useMemo(() => {
     return logs.filter(log => {
-      // sensitivity
       if (sensitivity === 'sensitive' && !log.sensitive) return false;
       if (sensitivity === 'normal' && log.sensitive) return false;
 
-      // app
       if (appFilter !== 'all' && log.app !== appFilter) return false;
 
-      // date
       if (dateFilter !== 'all' && log.createdAt) {
         if (dateFilter === 'today' && !isWithinDays(log.createdAt, 1)) return false;
         if (dateFilter === '7' && !isWithinDays(log.createdAt, 7)) return false;
         if (dateFilter === '30' && !isWithinDays(log.createdAt, 30)) return false;
       }
 
-      // search
       const q = search.toLowerCase();
       if (!q) return true;
 
@@ -191,9 +199,7 @@ export default function AuditDashboardPage() {
     });
   }, [logs, search, sensitivity, dateFilter, appFilter]);
 
-  /* =========================
-     UI
-  ========================= */
+  /* ================= UI ================= */
   return (
     <Box maxW="7xl" mx="auto" py={10} px={4}>
       <Flex justify="space-between" align="center" mb={4}>
@@ -256,10 +262,8 @@ export default function AuditDashboardPage() {
             borderColor={log.sensitive ? 'red.400' : 'green.400'}
           >
             <VStack align="start" spacing={2}>
-              <Text fontWeight="bold">Application</Text>
-              <Text fontSize="sm" wordBreak="break-all">
-                {log.app}
-              </Text>
+              <Text fontWeight="bold">Dataset</Text>
+              <Tag colorScheme="purple">{log.app}</Tag>
 
               <Text fontSize="sm">
                 <b>Access time:</b><br />
