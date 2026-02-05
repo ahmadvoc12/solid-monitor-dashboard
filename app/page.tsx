@@ -39,13 +39,18 @@ const EX  = 'https://example.org/solid/audit#';
 /* ======================================================
    TYPES
 ====================================================== */
+type DataPair = {
+  field: string;
+  value: string;
+};
+
 type AuditLog = {
   app: string;
   created: string;
   createdAt: Date | null;
   sensitive: boolean;
   personalData: string[];
-  values: string[];
+  dataPairs: DataPair[];
 };
 
 /* ======================================================
@@ -55,30 +60,32 @@ function extractAppFromResource(resource: string): string {
   try {
     const url = new URL(resource);
     const segments = url.pathname.split('/').filter(Boolean);
-
     const publicIdx = segments.indexOf('public');
-    if (publicIdx !== -1 && segments[publicIdx + 1]) {
-      return segments[publicIdx + 1];
-    }
-
-    return segments[segments.length - 1];
+    return publicIdx !== -1 && segments[publicIdx + 1]
+      ? segments[publicIdx + 1]
+      : 'Unknown';
   } catch {
     return 'Unknown';
   }
 }
 
 function shortIri(iri: string) {
+  if (iri.includes('schema.org/')) {
+    return iri.replace('https://schema.org/', 'schema:');
+  }
+  if (iri.includes('purl.org/dc/terms/')) {
+    return iri.replace('http://purl.org/dc/terms/', 'dct:');
+  }
   return iri.split('#').pop() ?? iri;
 }
 
-/* ⛔ FILTER DATA YANG BERTIPE TANGGAL */
-function isDateLike(value: string) {
-  const v = value.toLowerCase();
+/* ⛔ METADATA FIELD → JANGAN DITAMPILKAN */
+function isMetadataField(field: string) {
   return (
-    v.includes('date') ||
-    v.includes('time') ||
-    v.includes('created') ||
-    v.includes('timestamp')
+    field.includes('purl.org/dc/terms') ||
+    field.includes('created') ||
+    field.includes('modified') ||
+    field.includes('timestamp')
   );
 }
 
@@ -134,12 +141,19 @@ export default function AuditDashboardPage() {
           const resources = getUrlAll(thing, `${DPV}hasResource`);
           const categories = getUrlAll(thing, `${DPV}hasDataCategory`);
 
-          /* ✅ PERSONAL DATA – SUDAH DIFILTER (NO DATE) */
           const personalData = getUrlAll(thing, `${DPV}hasPersonalData`)
-            .map(shortIri)
-            .filter(pd => !isDateLike(pd));
+            .map(shortIri);
 
+          /* 🔥 FIELD + VALUE DIPASANGKAN */
+          const fields = getStringNoLocaleAll(thing, `${EX}hasDataField`);
           const values = getStringNoLocaleAll(thing, `${EX}hasDataValue`);
+
+          const dataPairs = fields
+            .map((field, i) => ({
+              field,
+              value: values[i]
+            }))
+            .filter(p => !isMetadataField(p.field));
 
           const createdDt = getDatetime(thing, `${DCT}created`) ?? null;
 
@@ -159,7 +173,7 @@ export default function AuditDashboardPage() {
             createdAt: createdDt,
             sensitive,
             personalData,
-            values
+            dataPairs
           });
         });
 
@@ -202,7 +216,11 @@ export default function AuditDashboardPage() {
       return (
         log.app.toLowerCase().includes(q) ||
         log.personalData.some(p => p.toLowerCase().includes(q)) ||
-        log.values.some(v => v.toLowerCase().includes(q))
+        log.dataPairs.some(
+          p =>
+            p.field.toLowerCase().includes(q) ||
+            p.value.toLowerCase().includes(q)
+        )
       );
     });
   }, [logs, search, sensitivity, dateFilter, appFilter]);
@@ -221,7 +239,7 @@ export default function AuditDashboardPage() {
 
       <VStack spacing={4} mb={6} align="stretch">
         <Input
-          placeholder="Search application, data, or value..."
+          placeholder="Search application, schema, or value..."
           value={search}
           onChange={e => setSearch(e.target.value)}
         />
@@ -282,7 +300,7 @@ export default function AuditDashboardPage() {
               {log.personalData.length > 0 && (
                 <>
                   <Text fontWeight="bold" pt={2}>
-                    Data Accessed
+                    Data Category
                   </Text>
                   <Flex wrap="wrap" gap={2}>
                     {log.personalData.map((pd, idx) => (
@@ -294,16 +312,25 @@ export default function AuditDashboardPage() {
                 </>
               )}
 
-              {log.values.length > 0 && (
+              {log.dataPairs.length > 0 && (
                 <>
                   <Text fontWeight="bold" pt={2}>
-                    Values
+                    Data Values
                   </Text>
-                  {log.values.map((v, idx) => (
-                    <Text key={idx} fontSize="sm">
-                      • {v}
-                    </Text>
-                  ))}
+
+                  <VStack align="start" spacing={1}>
+                    {log.dataPairs.map((p, idx) => (
+                      <HStack key={idx} spacing={2}>
+                        <Tag size="sm" colorScheme="blue">
+                          {shortIri(p.field)}
+                        </Tag>
+                        <Text fontSize="sm">→</Text>
+                        <Tag size="sm" colorScheme="green">
+                          {p.value}
+                        </Tag>
+                      </HStack>
+                    ))}
+                  </VStack>
                 </>
               )}
             </VStack>
