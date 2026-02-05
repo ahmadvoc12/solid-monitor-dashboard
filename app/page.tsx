@@ -40,7 +40,7 @@ const EX  = 'https://example.org/solid/audit#';
    TYPES
 ====================================================== */
 type AuditLog = {
-  app: string;                 // 👉 health-records
+  app: string;
   created: string;
   createdAt: Date | null;
   sensitive: boolean;
@@ -51,12 +51,6 @@ type AuditLog = {
 /* ======================================================
    HELPERS
 ====================================================== */
-
-/**
- * Dari:
- * http://localhost:3001/ayobisa2/public/health-records/record-xxx.ttl
- * ➜ "health-records"
- */
 function extractAppFromResource(resource: string): string {
   try {
     const url = new URL(resource);
@@ -77,10 +71,20 @@ function shortIri(iri: string) {
   return iri.split('#').pop() ?? iri;
 }
 
+/* ⛔ FILTER DATA YANG BERTIPE TANGGAL */
+function isDateLike(value: string) {
+  const v = value.toLowerCase();
+  return (
+    v.includes('date') ||
+    v.includes('time') ||
+    v.includes('created') ||
+    v.includes('timestamp')
+  );
+}
+
 function isWithinDays(date: Date, days: number) {
   const now = new Date();
-  const diff = now.getTime() - date.getTime();
-  return diff <= days * 24 * 60 * 60 * 1000;
+  return now.getTime() - date.getTime() <= days * 86400000;
 }
 
 /* ======================================================
@@ -129,7 +133,12 @@ export default function AuditDashboardPage() {
         getThingAll(dataset).forEach(thing => {
           const resources = getUrlAll(thing, `${DPV}hasResource`);
           const categories = getUrlAll(thing, `${DPV}hasDataCategory`);
-          const personalData = getUrlAll(thing, `${DPV}hasPersonalData`);
+
+          /* ✅ PERSONAL DATA – SUDAH DIFILTER (NO DATE) */
+          const personalData = getUrlAll(thing, `${DPV}hasPersonalData`)
+            .map(shortIri)
+            .filter(pd => !isDateLike(pd));
+
           const values = getStringNoLocaleAll(thing, `${EX}hasDataValue`);
 
           const createdDt = getDatetime(thing, `${DCT}created`) ?? null;
@@ -149,7 +158,7 @@ export default function AuditDashboardPage() {
             created: createdDt?.toISOString() ?? '-',
             createdAt: createdDt,
             sensitive,
-            personalData: personalData.map(shortIri),
+            personalData,
             values
           });
         });
@@ -179,7 +188,6 @@ export default function AuditDashboardPage() {
     return logs.filter(log => {
       if (sensitivity === 'sensitive' && !log.sensitive) return false;
       if (sensitivity === 'normal' && log.sensitive) return false;
-
       if (appFilter !== 'all' && log.app !== appFilter) return false;
 
       if (dateFilter !== 'all' && log.createdAt) {
@@ -211,7 +219,6 @@ export default function AuditDashboardPage() {
 
       <Divider mb={6} />
 
-      {/* FILTER BAR */}
       <VStack spacing={4} mb={6} align="stretch">
         <Input
           placeholder="Search application, data, or value..."
@@ -236,9 +243,7 @@ export default function AuditDashboardPage() {
           <Select value={appFilter} onChange={e => setAppFilter(e.target.value)}>
             <option value="all">All Applications</option>
             {apps.map(app => (
-              <option key={app} value={app}>
-                {app}
-              </option>
+              <option key={app} value={app}>{app}</option>
             ))}
           </Select>
         </HStack>
@@ -262,7 +267,7 @@ export default function AuditDashboardPage() {
             borderColor={log.sensitive ? 'red.400' : 'green.400'}
           >
             <VStack align="start" spacing={2}>
-              <Text fontWeight="bold">Dataset</Text>
+              <Text fontWeight="bold">App</Text>
               <Tag colorScheme="purple">{log.app}</Tag>
 
               <Text fontSize="sm">
@@ -271,9 +276,7 @@ export default function AuditDashboardPage() {
               </Text>
 
               <Badge colorScheme={log.sensitive ? 'red' : 'green'}>
-                {log.sensitive
-                  ? 'Sensitive Personal Data'
-                  : 'Non-Sensitive Data'}
+                {log.sensitive ? 'Sensitive Personal Data' : 'Non-Sensitive Data'}
               </Badge>
 
               {log.personalData.length > 0 && (
