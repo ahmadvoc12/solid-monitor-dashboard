@@ -1,17 +1,82 @@
 'use client';
 
 import {
-  Box, Text, Spinner, SimpleGrid, useToast, Flex, Divider, Badge, VStack, Tag, Input, Select,
-  HStack, Button, Modal, ModalOverlay, ModalContent, ModalHeader, ModalBody, ModalCloseButton,
-  ModalFooter, Switch, FormControl, FormLabel, FormHelperText, Table, Thead, Tbody, Tr, Th, Td,
-  Checkbox, Accordion, AccordionItem, AccordionButton, AccordionPanel, AccordionIcon, NumberInput,
-  NumberInputField, NumberInputStepper, NumberIncrementStepper, NumberDecrementStepper, useDisclosure,
-  IconButton, Tooltip, Alert, AlertIcon, Card, CardBody, CardHeader, Stat, StatLabel, StatNumber,
-  StatHelpText, Tabs, TabList, TabPanels, Tab, TabPanel, Icon, Link, Code,
+  Box,
+  Text,
+  Spinner,
+  SimpleGrid,
+  useToast,
+  Flex,
+  Divider,
+  Badge,
+  VStack,
+  Tag,
+  Input,
+  Select,
+  HStack,
+  Button,
+  Modal,
+  ModalOverlay,
+  ModalContent,
+  ModalHeader,
+  ModalBody,
+  ModalCloseButton,
+  ModalFooter,
+  Switch,
+  FormControl,
+  FormLabel,
+  FormHelperText,
+  Table,
+  Thead,
+  Tbody,
+  Tr,
+  Th,
+  Td,
+  Checkbox,
+  Accordion,
+  AccordionItem,
+  AccordionButton,
+  AccordionPanel,
+  AccordionIcon,
+  NumberInput,
+  NumberInputField,
+  NumberInputStepper,
+  NumberIncrementStepper,
+  NumberDecrementStepper,
+  useDisclosure,
+  IconButton,
+  Tooltip,
+  Alert,
+  AlertIcon,
+  Card,
+  CardBody,
+  CardHeader,
+  Stat,
+  StatLabel,
+  StatNumber,
+  StatHelpText,
+  Tabs,
+  TabList,
+  TabPanels,
+  Tab,
+  TabPanel,
+  Progress,
+  Icon,
+  Link,
+  Code,
+  Tooltip as ChakraTooltip,
 } from '@chakra-ui/react';
 
 import {
-  EditIcon, DeleteIcon, AddIcon, InfoIcon, ViewIcon, WarningIcon, CheckIcon, CloseIcon, ExternalLinkIcon,
+  EditIcon,
+  DeleteIcon,
+  AddIcon,
+  InfoIcon,
+  ViewIcon,
+  WarningIcon,
+  CheckIcon,
+  CloseIcon,
+  ExternalLinkIcon,
 } from '@chakra-ui/icons';
 
 import { useEffect, useMemo, useState } from 'react';
@@ -19,9 +84,23 @@ import { useRouter } from 'next/navigation';
 import { useSolidSession } from '@/contexts/SolidSessionContext';
 
 import {
-  getSolidDataset, getThingAll, getUrlAll, getDatetime, getPodUrlAll, getStringNoLocaleAll,
-  createThing, setUrl, setDatetime, setStringNoLocale, saveSolidDatasetAt, getBoolean, getInteger,
-  createSolidDataset, setThing, setBoolean,
+  getSolidDataset,
+  getThingAll,
+  getUrlAll,
+  getDatetime,
+  getPodUrlAll,
+  getStringNoLocaleAll,
+  getBoolean,
+  getInteger,
+  createThing,
+  setUrl,
+  setDatetime,
+  setStringNoLocale,
+  buildThing,
+  saveSolidDatasetAt,
+  createSolidDataset,
+  setThing,
+  setBoolean,
 } from '@inrupt/solid-client';
 
 /* ======================================================
@@ -91,6 +170,7 @@ type PolicyConstraint = {
 
 type Policy = {
   id: string;
+  uuid?: string;
   title: string;
   description: string;
   targetField: string;
@@ -132,6 +212,14 @@ function generatePolicyId() {
   return `policy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function generateUUID() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
+
 function parseAccessLogEntry(thing: any): AccessLogEntry | null {
   const types = getUrlAll(thing, `${RDF}type`);
   if (!types.some((t: string) => t.includes('Activity'))) return null;
@@ -151,8 +239,8 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
     getThingAll(thing.dataset).forEach((fieldThing: any) => {
       const fieldTypes = getUrlAll(fieldThing, `${RDF}type`);
       if (!fieldTypes.some((t: string) => t.includes('AccessedDataField'))) return;
-      if (getUrlAll(fieldThing, `${FORCE}belongsToBundle`)[0] !== fieldsBundle) return;
-      
+      const belongsToBundle = getUrlAll(fieldThing, `${FORCE}belongsToBundle`)[0];
+      if (belongsToBundle !== fieldsBundle) return;
       fields.push({
         fieldIri: getUrlAll(fieldThing, `${FORCE}fieldIRI`)[0] ?? '',
         fieldName: getStringNoLocaleAll(fieldThing, `${FORCE}fieldName`)[0] ?? shortIri(getUrlAll(fieldThing, `${FORCE}fieldIRI`)[0] ?? ''),
@@ -170,8 +258,8 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
     getThingAll(thing.dataset).forEach((evalThing: any) => {
       const evalTypes = getUrlAll(evalThing, `${RDF}type`);
       if (!evalTypes.some((t: string) => t.includes('PolicyEvaluation'))) return;
-      if (getUrlAll(evalThing, `${FORCE}belongsToBundle`)[0] !== policyBundle) return;
-      
+      const belongsToBundle = getUrlAll(evalThing, `${FORCE}belongsToBundle`)[0];
+      if (belongsToBundle !== policyBundle) return;
       policyEvaluations.push({
         evaluatedPolicy: getUrlAll(evalThing, `${FORCE}evaluatedPolicy`)[0] ?? '',
         evaluationResult: (getStringNoLocaleAll(evalThing, `${FORCE}evaluationResult`)[0] as 'ALLOWED' | 'VIOLATION') ?? 'ALLOWED',
@@ -188,11 +276,12 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
     getThingAll(thing.dataset).forEach((violThing: any) => {
       const violTypes = getUrlAll(violThing, `${RDF}type`);
       if (!violTypes.some((t: string) => t.includes('PolicyViolation'))) return;
-      if (getUrlAll(violThing, `${FORCE}belongsToBundle`)[0] !== violationBundle) return;
-      
-      getUrlAll(violThing, `${FORCE}violatedPolicy`).forEach((p: string) => violatedPolicies.push(p));
-      
-      getUrlAll(violThing, `${FORCE}hasFieldViolation`).forEach((fvUrl: string) => {
+      const belongsToBundle = getUrlAll(violThing, `${FORCE}belongsToBundle`)[0];
+      if (belongsToBundle !== violationBundle) return;
+      const policies = getUrlAll(violThing, `${FORCE}violatedPolicy`);
+      policies.forEach((p: string) => violatedPolicies.push(p));
+      const fieldViolations = getUrlAll(violThing, `${FORCE}hasFieldViolation`);
+      fieldViolations.forEach((fvUrl: string) => {
         const fvThing = getThingAll(thing.dataset).find((t: any) => t.url === fvUrl);
         if (fvThing) {
           violations.push({
@@ -230,11 +319,9 @@ export default function AuditDashboardPage() {
   const router = useRouter();
   const toast = useToast();
 
-  // State
   const [logs, setLogs] = useState<AccessLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   
-  // Policy management state
   const { isOpen: isPolicyModalOpen, onOpen: onPolicyModalOpen, onClose: onPolicyModalClose } = useDisclosure();
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [loadingPolicies, setLoadingPolicies] = useState(false);
@@ -247,20 +334,17 @@ export default function AuditDashboardPage() {
     constraints: [{ type: 'count', operator: 'lteq', value: 1 }],
   });
 
-  // Privacy settings state
   const { isOpen: isPrivacyModalOpen, onOpen: onPrivacyModalOpen, onClose: onPrivacyModalClose } = useDisclosure();
   const [privacyMappings, setPrivacyMappings] = useState<PrivacyMapping[]>([]);
   const [loadingPrivacy, setLoadingPrivacy] = useState(false);
   const [availableFields, setAvailableFields] = useState<string[]>([]);
 
-  // Filter state
   const [search, setSearch] = useState('');
   const [sensitivity, setSensitivity] = useState<'all' | 'sensitive' | 'normal'>('all');
   const [dateFilter, setDateFilter] = useState<'all' | 'today' | '7' | '30'>('all');
   const [appFilter, setAppFilter] = useState<string>('all');
   const [decisionFilter, setDecisionFilter] = useState<'all' | 'allowed' | 'violation'>('all');
 
-  // Stats
   const stats = useMemo(() => {
     const total = logs.length;
     const violations = logs.filter((l) => l.decision === 'VIOLATION').length;
@@ -269,37 +353,27 @@ export default function AuditDashboardPage() {
     return { total, violations, sensitive, apps: apps.size };
   }, [logs]);
 
-  /* =========================
-     AUTH
-  ========================= */
   useEffect(() => {
     if (!isLoggedIn) router.replace('/sign-in');
   }, [isLoggedIn, router]);
 
-  /* =========================
-     LOAD ACCESS LOG FROM access-log.ttl
-  ========================= */
   useEffect(() => {
     if (!session?.info?.webId) return;
-
     (async () => {
       try {
         const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
         const accessLogUrl = `${podUrls[0]}${ACCESS_LOG_PATH}`;
         const dataset = await getSolidDataset(accessLogUrl, { fetch: session.fetch });
         const parsed: AccessLogEntry[] = [];
-        
-        getThingAll(dataset).forEach((thing: any) => {
+        getThingAll(dataset).forEach((thing) => {
           const entry = parseAccessLogEntry(thing);
           if (entry) parsed.push(entry);
         });
-        
         parsed.sort((a, b) => {
           if (!a.startedAt) return 1;
           if (!b.startedAt) return -1;
           return b.startedAt.getTime() - a.startedAt.getTime();
         });
-        
         setLogs(parsed);
       } catch (err) {
         console.error('Failed to load access log:', err);
@@ -314,32 +388,27 @@ export default function AuditDashboardPage() {
     })();
   }, [session, toast]);
 
-  /* =========================
-     LOAD POLICIES
-  ========================= */
   const loadPolicies = async () => {
     if (!session?.info?.webId) return;
     setLoadingPolicies(true);
-
     try {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
       const policyUrl = `${podUrls[0]}${POLICY_PATH}`;
       const dataset = await getSolidDataset(policyUrl, { fetch: session.fetch });
       const parsed: Policy[] = [];
-
       getThingAll(dataset).forEach((thing: any) => {
         const types = getUrlAll(thing, `${RDF}type`);
         if (!types.some((t: string) => t.includes('Policy'))) return;
-
         const title = getStringNoLocaleAll(thing, `${DCT}title`)[0] || 'Untitled Policy';
         const description = getStringNoLocaleAll(thing, `${DCT}description`)[0] || '';
         const target = getUrlAll(thing, `${ODRL}target`)[0] || '';
         const active = getBoolean(thing, `${FORCE}policyActive`) ?? true;
         const createdAt = getDatetime(thing, `${DCT}created`) ?? undefined;
+        const uuid = getStringNoLocaleAll(thing, `${DCT}identifier`)[0]?.replace('urn:uuid:', '');
         const constraints: PolicyConstraint[] = [{ type: 'count', operator: 'lteq', value: 1 }];
-
         parsed.push({
           id: thing.url,
+          uuid,
           title,
           description,
           targetField: shortIri(target),
@@ -348,13 +417,13 @@ export default function AuditDashboardPage() {
           createdAt,
         });
       });
-
       setPolicies(parsed);
     } catch (err) {
       console.error('Failed to load policies:', err);
       setPolicies([
         {
           id: 'default-bloodtype',
+          uuid: '2c5c9cc0-c73e-4f78-8905-c08bd427866d',
           title: 'Blood Type Access Limit',
           description: 'Limit bloodType access to 1 per session',
           targetField: 'bloodType',
@@ -363,6 +432,7 @@ export default function AuditDashboardPage() {
         },
         {
           id: 'default-identity',
+          uuid: 'bd7077e5-990b-4c24-87cb-ce3bbc96fd32',
           title: 'Identity Access Limit',
           description: 'Limit identifier access to 3 per session',
           targetField: 'identifier',
@@ -375,13 +445,9 @@ export default function AuditDashboardPage() {
     }
   };
 
-  /* =========================
-     LOAD PRIVACY MAPPINGS
-  ========================= */
   const loadPrivacyMappings = async () => {
     if (!session?.info?.webId) return;
     setLoadingPrivacy(true);
-
     try {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
       const mappingUrl = `${podUrls[0]}${PRIVACY_MAPPING_PATH}`;
@@ -391,10 +457,8 @@ export default function AuditDashboardPage() {
       } catch {
         dataset = createSolidDataset();
       }
-
       const mappings: PrivacyMapping[] = [];
       const fields = new Set<string>();
-
       getThingAll(dataset).forEach((thing: any) => {
         const fieldIri = getUrlAll(thing, `${EX}fieldIri`)[0];
         if (!fieldIri) return;
@@ -407,13 +471,11 @@ export default function AuditDashboardPage() {
           personalDataType: getUrlAll(thing, `${EX}personalDataType`)[0] || 'dpv:Data',
         });
       });
-
       const commonFields = [
         { iri: 'https://schema.org/bloodType', label: 'Blood Type', sensitive: true, category: 'dpv:SpecialCategoryPersonalData', type: 'dpv:HealthData' },
         { iri: 'https://schema.org/identifier', label: 'Identifier', sensitive: true, category: 'dpv:PersonalData', type: 'dpv:PersonalIdentifier' },
         { iri: 'http://purl.org/dc/terms/created', label: 'Created Timestamp', sensitive: false, category: 'dpv:PersonalData', type: 'dpv:Data' },
       ];
-
       commonFields.forEach((cf) => {
         if (!fields.has(cf.iri)) {
           mappings.push({
@@ -425,7 +487,6 @@ export default function AuditDashboardPage() {
           });
         }
       });
-
       setPrivacyMappings(mappings);
       setAvailableFields(Array.from(fields).concat(commonFields.map((f) => f.iri)));
     } catch (err) {
@@ -435,12 +496,8 @@ export default function AuditDashboardPage() {
     }
   };
 
-  /* =========================
-     ✅ SAVE POLICY (FIXED: No buildThing)
-  ========================= */
   const savePolicy = async (policy: Policy) => {
     if (!session?.info?.webId) return;
-
     try {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
       const policyUrl = `${podUrls[0]}${POLICY_PATH}`;
@@ -450,28 +507,24 @@ export default function AuditDashboardPage() {
       } catch {
         dataset = createSolidDataset();
       }
-
-      // ✅ FIX: buildThing accepts Thing directly, not { thing, url }
       let policyThing;
       if (policy.id.startsWith('http')) {
         const existingThing = getThingAll(dataset).find((t: any) => t.url === policy.id);
-        // ✅ existingThing is already ThingPersisted, or create new
-        policyThing = existingThing ?? createThing({ url: policy.id });
+        policyThing = existingThing ? buildThing(existingThing) : createThing({ url: policy.id });
       } else {
         policyThing = createThing({ url: `${podUrls[0]}${POLICY_PATH}#${policy.id}` });
       }
-
-      // ✅ Set properties (setters return new Thing, must reassign)
       policyThing = setUrl(policyThing, `${RDF}type`, `${ODRL}Policy`);
       policyThing = setStringNoLocale(policyThing, `${DCT}title`, policy.title);
       policyThing = setStringNoLocale(policyThing, `${DCT}description`, policy.description || '');
       policyThing = setDatetime(policyThing, `${DCT}created`, policy.createdAt || new Date());
       policyThing = setUrl(policyThing, `${ODRL}target`, policy.targetField);
       policyThing = setBoolean(policyThing, `${FORCE}policyActive`, policy.active);
-
+      if (policy.uuid && !getStringNoLocaleAll(policyThing, `${DCT}identifier`)[0]) {
+        policyThing = setStringNoLocale(policyThing, `${DCT}identifier`, `urn:uuid:${policy.uuid}`);
+      }
       dataset = setThing(dataset, policyThing);
       await saveSolidDatasetAt(policyUrl, dataset, { fetch: session.fetch });
-
       toast({ title: 'Policy saved', description: `${policy.title} has been updated`, status: 'success' });
       await loadPolicies();
     } catch (err) {
@@ -481,17 +534,12 @@ export default function AuditDashboardPage() {
     }
   };
 
-  /* =========================
-     SAVE PRIVACY MAPPINGS
-  ========================= */
   const savePrivacyMappings = async () => {
     if (!session?.info?.webId) return;
-
     try {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
       const mappingUrl = `${podUrls[0]}${PRIVACY_MAPPING_PATH}`;
       let dataset = createSolidDataset();
-
       privacyMappings.forEach((mapping, idx) => {
         const thing = createThing({ url: `${mappingUrl}#mapping-${idx}` });
         setUrl(thing, `${EX}fieldIri`, mapping.fieldIri);
@@ -501,7 +549,6 @@ export default function AuditDashboardPage() {
         setUrl(thing, `${EX}personalDataType`, mapping.personalDataType);
         dataset = setThing(dataset, thing);
       });
-
       await saveSolidDatasetAt(mappingUrl, dataset, { fetch: session.fetch });
       toast({ title: 'Privacy settings saved', description: 'Field sensitivity mappings have been updated', status: 'success' });
     } catch (err) {
@@ -511,9 +558,6 @@ export default function AuditDashboardPage() {
     }
   };
 
-  /* =========================
-     FILTERED LOGS
-  ========================= */
   const apps = useMemo(() => Array.from(new Set(logs.map((l) => l.app))), [logs]);
 
   const filteredLogs = useMemo(() => {
@@ -540,12 +584,9 @@ export default function AuditDashboardPage() {
     });
   }, [logs, search, sensitivity, dateFilter, appFilter, decisionFilter]);
 
-  /* =========================
-     EVENT HANDLERS
-  ========================= */
   const handleAddPolicy = () => {
     setEditingPolicy(null);
-    setNewPolicy({ title: '', description: '', targetField: '', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 1 }] });
+    setNewPolicy({ title: '', description: '', targetField: '', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 1 }], uuid: generateUUID() });
     onPolicyModalOpen();
   };
 
@@ -567,6 +608,7 @@ export default function AuditDashboardPage() {
     }
     const policyToSave: Policy = {
       id: editingPolicy?.id || generatePolicyId(),
+      uuid: editingPolicy?.uuid || generateUUID(),
       title: newPolicy.title!,
       description: newPolicy.description || '',
       targetField: newPolicy.targetField!,
@@ -593,9 +635,6 @@ export default function AuditDashboardPage() {
     setPrivacyMappings((prev) => [...prev, newField]);
   };
 
-  /* =========================
-     SCHEMA VISUALIZATION COMPONENT
-  ========================= */
   const SchemaVisualization = ({ fields }: { fields: AccessedField[] }) => {
     if (fields.length === 0) return <Text fontSize="sm" color="gray.500">No schema data available</Text>;
     return (
@@ -611,9 +650,9 @@ export default function AuditDashboardPage() {
                 <Tag size="sm" colorScheme={field.isSensitive ? 'red' : 'blue'}>
                   {field.isSensitive ? 'Sensitive' : 'Normal'}
                 </Tag>
-                <Tooltip label={field.dataCategory}>
+                <ChakraTooltip label={field.dataCategory}>
                   <Tag size="sm" variant="outline">{shortIri(field.personalDataType)}</Tag>
-                </Tooltip>
+                </ChakraTooltip>
               </HStack>
             </Flex>
             {field.fieldValue && <Text fontSize="xs" mt={1} color="gray.700">Value: <Code>{field.fieldValue}</Code></Text>}
@@ -623,12 +662,8 @@ export default function AuditDashboardPage() {
     );
   };
 
-  /* =========================
-     UI RENDER
-  ========================= */
   return (
     <Box maxW="7xl" mx="auto" py={10} px={4}>
-      {/* HEADER */}
       <Flex justify="space-between" align="center" mb={6} wrap="wrap" gap={3}>
         <VStack align="start" spacing={1}>
           <Text fontSize="2xl" fontWeight="bold">Solid Audit Dashboard</Text>
@@ -640,10 +675,7 @@ export default function AuditDashboardPage() {
           <Button size="sm" colorScheme="green" leftIcon={<InfoIcon />} onClick={() => { loadPrivacyMappings(); onPrivacyModalOpen(); }}>Privacy Settings</Button>
         </HStack>
       </Flex>
-
       <Divider mb={6} />
-
-      {/* STATS CARDS */}
       <SimpleGrid columns={{ base: 2, md: 4 }} spacing={4} mb={6}>
         <Card>
           <CardBody>
@@ -679,8 +711,6 @@ export default function AuditDashboardPage() {
           </CardBody>
         </Card>
       </SimpleGrid>
-
-      {/* FILTER BAR */}
       <Card mb={6}>
         <CardBody>
           <VStack spacing={4} align="stretch">
@@ -710,23 +740,17 @@ export default function AuditDashboardPage() {
           </VStack>
         </CardBody>
       </Card>
-
       {loading && <Spinner />}
-
       {!loading && filteredLogs.length === 0 && (
         <Alert status="info"><AlertIcon />No audit logs match the selected filters.</Alert>
       )}
-
-      {/* TABS: List View & Schema View */}
       <Tabs variant="enclosed">
         <TabList>
           <Tab>Access Log</Tab>
           <Tab>Schema Overview</Tab>
           <Tab>Violation Report</Tab>
         </TabList>
-
         <TabPanels>
-          {/* TAB 1: ACCESS LOG LIST */}
           <TabPanel>
             <SimpleGrid columns={{ base: 1, md: 2 }} spacing={5}>
               {filteredLogs.map((log) => (
@@ -745,15 +769,12 @@ export default function AuditDashboardPage() {
                   </CardHeader>
                   <CardBody pt={0}>
                     <VStack align="start" spacing={3}>
-                      {/* Resource */}
                       <Box>
                         <Text fontSize="xs" fontWeight="medium" color="gray.600">Resource</Text>
                         <Link href={log.accessedResource} isExternal fontSize="sm" wordBreak="break-all">
                           {shortIri(log.accessedResource)} <ExternalLinkIcon mx="2px" />
                         </Link>
                       </Box>
-                      
-                      {/* Fields Accessed */}
                       {log.fields.length > 0 && (
                         <Box width="100%">
                           <Text fontSize="xs" fontWeight="medium" color="gray.600" mb={1}>Fields Accessed</Text>
@@ -764,8 +785,6 @@ export default function AuditDashboardPage() {
                           </Flex>
                         </Box>
                       )}
-                      
-                      {/* Policy Evaluations */}
                       {log.policyEvaluations.length > 0 && (
                         <Box width="100%">
                           <Text fontSize="xs" fontWeight="medium" color="gray.600" mb={1}>Policy Checks</Text>
@@ -778,8 +797,6 @@ export default function AuditDashboardPage() {
                           </VStack>
                         </Box>
                       )}
-                      
-                      {/* Violations Detail */}
                       {log.violations.length > 0 && (
                         <Alert status="warning" fontSize="sm">
                           <VStack align="start" spacing={1}>
@@ -792,8 +809,6 @@ export default function AuditDashboardPage() {
                           </VStack>
                         </Alert>
                       )}
-                      
-                      {/* View Schema Button */}
                       <Button size="xs" variant="ghost" leftIcon={<ViewIcon />} onClick={() => {}}>
                         View Schema Details
                       </Button>
@@ -803,8 +818,6 @@ export default function AuditDashboardPage() {
               ))}
             </SimpleGrid>
           </TabPanel>
-
-          {/* TAB 2: SCHEMA OVERVIEW */}
           <TabPanel>
             <Card>
               <CardHeader><Text fontWeight="bold">Data Schema Overview</Text></CardHeader>
@@ -844,8 +857,6 @@ export default function AuditDashboardPage() {
               </CardBody>
             </Card>
           </TabPanel>
-
-          {/* TAB 3: VIOLATION REPORT */}
           <TabPanel>
             <Card>
               <CardHeader><Text fontWeight="bold">Policy Violation Report</Text></CardHeader>
@@ -887,13 +898,12 @@ export default function AuditDashboardPage() {
         </TabPanels>
       </Tabs>
 
-      {/* POLICY SETTINGS MODAL */}
       <Modal isOpen={isPolicyModalOpen} onClose={onPolicyModalClose} size="4xl">
         <ModalOverlay />
-        <ModalContent>
+        <ModalContent bg="white">
           <ModalHeader>Policy Management</ModalHeader>
           <ModalCloseButton />
-          <ModalBody>
+          <ModalBody bg="white">
             <Accordion allowToggle defaultIndex={editingPolicy ? 0 : -1}>
               <AccordionItem>
                 <AccordionButton><Box flex="1" textAlign="left" fontWeight="bold">{editingPolicy ? '✏️ Edit Policy' : '➕ Add New Policy'}</Box><AccordionIcon /></AccordionButton>
@@ -902,8 +912,6 @@ export default function AuditDashboardPage() {
                     <FormControl isRequired><FormLabel>Policy Title</FormLabel><Input value={newPolicy.title || ''} onChange={(e) => setNewPolicy((p) => ({ ...p, title: e.target.value }))} placeholder="e.g., Blood Type Access Limit" /></FormControl>
                     <FormControl><FormLabel>Description</FormLabel><Input value={newPolicy.description || ''} onChange={(e) => setNewPolicy((p) => ({ ...p, description: e.target.value }))} placeholder="Describe what this policy controls" /></FormControl>
                     <FormControl isRequired><FormLabel>Target Field</FormLabel><Select value={newPolicy.targetField || ''} onChange={(e) => setNewPolicy((p) => ({ ...p, targetField: e.target.value }))} placeholder="Select a field to protect">{availableFields.map((field) => <option key={field} value={field}>{shortIri(field)}</option>)}</Select><FormHelperText>The data field this policy will monitor</FormHelperText></FormControl>
-                    
-                    {/* Constraints */}
                     <Box>
                       <Text fontWeight="bold" mb={2}>Constraints</Text>
                       <VStack spacing={3} align="stretch">
@@ -937,15 +945,12 @@ export default function AuditDashboardPage() {
                       </VStack>
                       <Button size="sm" variant="ghost" leftIcon={<AddIcon />} mt={2} onClick={() => setNewPolicy((p) => ({ ...p, constraints: [...(p.constraints || []), { type: 'count', operator: 'lteq', value: 1 }] }))}>Add Another Constraint</Button>
                     </Box>
-                    
                     <FormControl display="flex" alignItems="center"><FormLabel mb="0">Enable Policy</FormLabel><Switch isChecked={newPolicy.active} onChange={(e) => setNewPolicy((p) => ({ ...p, active: e.target.checked }))} /></FormControl>
                     <HStack justify="flex-end"><Button variant="ghost" onClick={onPolicyModalClose}>Cancel</Button><Button colorScheme="blue" onClick={handleSavePolicy}>{editingPolicy ? 'Update Policy' : 'Create Policy'}</Button></HStack>
                   </VStack>
                 </AccordionPanel>
               </AccordionItem>
             </Accordion>
-            
-            {/* Existing Policies */}
             <Box mt={6}>
               <Text fontWeight="bold" mb={3}>Existing Policies</Text>
               {loadingPolicies ? <Spinner /> : (
@@ -969,17 +974,16 @@ export default function AuditDashboardPage() {
               )}
             </Box>
           </ModalBody>
-          <ModalFooter><Button variant="ghost" onClick={onPolicyModalClose}>Close</Button></ModalFooter>
+          <ModalFooter bg="white"><Button variant="ghost" onClick={onPolicyModalClose}>Close</Button></ModalFooter>
         </ModalContent>
       </Modal>
 
-      {/* PRIVACY SETTINGS MODAL */}
       <Modal isOpen={isPrivacyModalOpen} onClose={onPrivacyModalClose} size="2xl">
         <ModalOverlay />
-        <ModalContent>
+        <ModalContent bg="white">
           <ModalHeader>Privacy Data Settings</ModalHeader>
           <ModalCloseButton />
-          <ModalBody>
+          <ModalBody bg="white">
             <Alert status="info" mb={4}><AlertIcon />Mark which fields contain sensitive personal data. Stored at <Code>{PRIVACY_MAPPING_PATH}</Code>.</Alert>
             {loadingPrivacy ? <Spinner /> : (
               <VStack spacing={4} align="stretch" maxH="60vh" overflowY="auto">
@@ -1005,7 +1009,7 @@ export default function AuditDashboardPage() {
             )}
             <Button size="sm" variant="outline" leftIcon={<AddIcon />} mt={4} onClick={handleAddField}>Add Custom Field</Button>
           </ModalBody>
-          <ModalFooter><HStack><Button variant="ghost" onClick={onPrivacyModalClose}>Cancel</Button><Button colorScheme="green" onClick={savePrivacyMappings}>Save Privacy Settings</Button></HStack></ModalFooter>
+          <ModalFooter bg="white"><HStack><Button variant="ghost" onClick={onPrivacyModalClose}>Cancel</Button><Button colorScheme="green" onClick={savePrivacyMappings}>Save Privacy Settings</Button></HStack></ModalFooter>
         </ModalContent>
       </Modal>
     </Box>
