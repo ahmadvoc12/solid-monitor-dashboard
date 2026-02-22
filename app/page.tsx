@@ -1,82 +1,17 @@
 'use client';
 
 import {
-  Box,
-  Text,
-  Spinner,
-  SimpleGrid,
-  useToast,
-  Flex,
-  Divider,
-  Badge,
-  VStack,
-  Tag,
-  Input,
-  Select,
-  HStack,
-  Button,
-  Modal,
-  ModalOverlay,
-  ModalContent,
-  ModalHeader,
-  ModalBody,
-  ModalCloseButton,
-  ModalFooter,
-  Switch,
-  FormControl,
-  FormLabel,
-  FormHelperText,
-  Table,
-  Thead,
-  Tbody,
-  Tr,
-  Th,
-  Td,
-  Checkbox,
-  Accordion,
-  AccordionItem,
-  AccordionButton,
-  AccordionPanel,
-  AccordionIcon,
-  NumberInput,
-  NumberInputField,
-  NumberInputStepper,
-  NumberIncrementStepper,
-  NumberDecrementStepper,
-  useDisclosure,
-  IconButton,
-  Tooltip,
-  Alert,
-  AlertIcon,
-  Card,
-  CardBody,
-  CardHeader,
-  Stat,
-  StatLabel,
-  StatNumber,
-  StatHelpText,
-  Tabs,
-  TabList,
-  TabPanels,
-  Tab,
-  TabPanel,
-  Progress,
-  Icon,
-  Link,
-  Code,
-  Tooltip as ChakraTooltip,
+  Box, Text, Spinner, SimpleGrid, useToast, Flex, Divider, Badge, VStack, Tag, Input, Select,
+  HStack, Button, Modal, ModalOverlay, ModalContent, ModalHeader, ModalBody, ModalCloseButton,
+  ModalFooter, Switch, FormControl, FormLabel, FormHelperText, Table, Thead, Tbody, Tr, Th, Td,
+  Checkbox, Accordion, AccordionItem, AccordionButton, AccordionPanel, AccordionIcon, NumberInput,
+  NumberInputField, NumberInputStepper, NumberIncrementStepper, NumberDecrementStepper, useDisclosure,
+  IconButton, Tooltip, Alert, AlertIcon, Card, CardBody, CardHeader, Stat, StatLabel, StatNumber,
+  StatHelpText, Tabs, TabList, TabPanels, Tab, TabPanel, Icon, Link, Code,
 } from '@chakra-ui/react';
 
 import {
-  EditIcon,
-  DeleteIcon,
-  AddIcon,
-  InfoIcon,
-  ViewIcon,
-  WarningIcon,
-  CheckIcon,
-  CloseIcon,
-  ExternalLinkIcon,
+  EditIcon, DeleteIcon, AddIcon, InfoIcon, ViewIcon, WarningIcon, CheckIcon, CloseIcon, ExternalLinkIcon,
 } from '@chakra-ui/icons';
 
 import { useEffect, useMemo, useState } from 'react';
@@ -84,23 +19,9 @@ import { useRouter } from 'next/navigation';
 import { useSolidSession } from '@/contexts/SolidSessionContext';
 
 import {
-  getSolidDataset,
-  getThingAll,
-  getUrlAll,
-  getDatetime,
-  getPodUrlAll,
-  getStringNoLocaleAll,
-  getBoolean,
-  getInteger,
-  createThing,
-  setUrl,
-  setDatetime,
-  setStringNoLocale,
-  buildThing,
-  saveSolidDatasetAt,
-  createSolidDataset,
-  setThing,
-  setBoolean,
+  getSolidDataset, getThingAll, getUrlAll, getDatetime, getPodUrlAll, getStringNoLocaleAll,
+  createThing, setUrl, setDatetime, setStringNoLocale, saveSolidDatasetAt, getBoolean, getInteger,
+  createSolidDataset, setThing, setBoolean,
 } from '@inrupt/solid-client';
 
 /* ======================================================
@@ -212,12 +133,11 @@ function generatePolicyId() {
 }
 
 function parseAccessLogEntry(thing: any): AccessLogEntry | null {
-  // Check if this is an access activity (prov:Activity with report:decision)
   const types = getUrlAll(thing, `${RDF}type`);
-  if (!types.some((t) => t.includes('Activity'))) return null;
+  if (!types.some((t: string) => t.includes('Activity'))) return null;
   
   const decision = getStringNoLocaleAll(thing, `${FORCE}decision`)[0];
-  if (!decision) return null; // Not an access log entry
+  if (!decision) return null;
   
   const accessId = thing.url.split('#').pop() ?? thing.url;
   const startedAt = getDatetime(thing, `${PROV}startedAtTime`) ?? null;
@@ -225,19 +145,13 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
   const accessMethod = getStringNoLocaleAll(thing, `${FORCE}accessMethod`)[0] ?? 'GET';
   const accessedResource = getUrlAll(thing, `${FORCE}accessedResource`)[0] ?? '';
   
-  // Extract fields from hasFieldsBundle
-  const fieldsBundle = getUrlAll(thing, `${FORCE}hasFieldsBundle`)[0];
   const fields: AccessedField[] = [];
-  
+  const fieldsBundle = getUrlAll(thing, `${FORCE}hasFieldsBundle`)[0];
   if (fieldsBundle) {
-    // In a real implementation, you'd fetch the bundle and parse its members
-    // For now, we extract from the same dataset assuming flat structure
-    getThingAll(thing.dataset).forEach((fieldThing) => {
+    getThingAll(thing.dataset).forEach((fieldThing: any) => {
       const fieldTypes = getUrlAll(fieldThing, `${RDF}type`);
-      if (!fieldTypes.some((t) => t.includes('AccessedDataField'))) return;
-      
-      const belongsToBundle = getUrlAll(fieldThing, `${FORCE}belongsToBundle`)[0];
-      if (belongsToBundle !== fieldsBundle) return;
+      if (!fieldTypes.some((t: string) => t.includes('AccessedDataField'))) return;
+      if (getUrlAll(fieldThing, `${FORCE}belongsToBundle`)[0] !== fieldsBundle) return;
       
       fields.push({
         fieldIri: getUrlAll(fieldThing, `${FORCE}fieldIRI`)[0] ?? '',
@@ -250,17 +164,13 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
     });
   }
   
-  // Extract policy evaluations from hasPolicyBundle
-  const policyBundle = getUrlAll(thing, `${FORCE}hasPolicyBundle`)[0];
   const policyEvaluations: PolicyEvaluation[] = [];
-  
+  const policyBundle = getUrlAll(thing, `${FORCE}hasPolicyBundle`)[0];
   if (policyBundle) {
-    getThingAll(thing.dataset).forEach((evalThing) => {
+    getThingAll(thing.dataset).forEach((evalThing: any) => {
       const evalTypes = getUrlAll(evalThing, `${RDF}type`);
-      if (!evalTypes.some((t) => t.includes('PolicyEvaluation'))) return;
-      
-      const belongsToBundle = getUrlAll(evalThing, `${FORCE}belongsToBundle`)[0];
-      if (belongsToBundle !== policyBundle) return;
+      if (!evalTypes.some((t: string) => t.includes('PolicyEvaluation'))) return;
+      if (getUrlAll(evalThing, `${FORCE}belongsToBundle`)[0] !== policyBundle) return;
       
       policyEvaluations.push({
         evaluatedPolicy: getUrlAll(evalThing, `${FORCE}evaluatedPolicy`)[0] ?? '',
@@ -271,28 +181,19 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
     });
   }
   
-  // Extract violations from hasViolationBundle
-  const violationBundle = getUrlAll(thing, `${FORCE}hasViolationBundle`)[0];
   const violations: FieldViolation[] = [];
   const violatedPolicies: string[] = [];
-  
+  const violationBundle = getUrlAll(thing, `${FORCE}hasViolationBundle`)[0];
   if (violationBundle) {
-    // Get the PolicyViolation thing
-    getThingAll(thing.dataset).forEach((violThing) => {
+    getThingAll(thing.dataset).forEach((violThing: any) => {
       const violTypes = getUrlAll(violThing, `${RDF}type`);
-      if (!violTypes.some((t) => t.includes('PolicyViolation'))) return;
+      if (!violTypes.some((t: string) => t.includes('PolicyViolation'))) return;
+      if (getUrlAll(violThing, `${FORCE}belongsToBundle`)[0] !== violationBundle) return;
       
-      const belongsToBundle = getUrlAll(violThing, `${FORCE}belongsToBundle`)[0];
-      if (belongsToBundle !== violationBundle) return;
+      getUrlAll(violThing, `${FORCE}violatedPolicy`).forEach((p: string) => violatedPolicies.push(p));
       
-      // Get violated policies
-      const policies = getUrlAll(violThing, `${FORCE}violatedPolicy`);
-      policies.forEach((p) => violatedPolicies.push(p));
-      
-      // Get field violations via hasFieldViolation
-      const fieldViolations = getUrlAll(violThing, `${FORCE}hasFieldViolation`);
-      fieldViolations.forEach((fvUrl) => {
-        const fvThing = getThingAll(thing.dataset).find((t) => t.url === fvUrl);
+      getUrlAll(violThing, `${FORCE}hasFieldViolation`).forEach((fvUrl: string) => {
+        const fvThing = getThingAll(thing.dataset).find((t: any) => t.url === fvUrl);
         if (fvThing) {
           violations.push({
             violatedField: getUrlAll(fvThing, `${FORCE}violatedField`)[0] ?? '',
@@ -305,8 +206,6 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
     });
   }
   
-  const hasSensitiveData = fields.some((f) => f.isSensitive);
-  
   return {
     id: thing.url,
     accessId,
@@ -318,7 +217,7 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
     fields,
     policyEvaluations,
     violations,
-    hasSensitiveData,
+    hasSensitiveData: fields.some((f) => f.isSensitive),
     violatedPolicies,
   };
 }
@@ -385,30 +284,22 @@ export default function AuditDashboardPage() {
 
     (async () => {
       try {
-        const podUrls = await getPodUrlAll(session.info.webId!, {
-          fetch: session.fetch,
-        });
-
+        const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
         const accessLogUrl = `${podUrls[0]}${ACCESS_LOG_PATH}`;
-
-        const dataset = await getSolidDataset(accessLogUrl, {
-          fetch: session.fetch,
-        });
-
+        const dataset = await getSolidDataset(accessLogUrl, { fetch: session.fetch });
         const parsed: AccessLogEntry[] = [];
-
-        getThingAll(dataset).forEach((thing) => {
+        
+        getThingAll(dataset).forEach((thing: any) => {
           const entry = parseAccessLogEntry(thing);
           if (entry) parsed.push(entry);
         });
-
-        // Sort by time descending (newest first)
+        
         parsed.sort((a, b) => {
           if (!a.startedAt) return 1;
           if (!b.startedAt) return -1;
           return b.startedAt.getTime() - a.startedAt.getTime();
         });
-
+        
         setLogs(parsed);
       } catch (err) {
         console.error('Failed to load access log:', err);
@@ -431,28 +322,20 @@ export default function AuditDashboardPage() {
     setLoadingPolicies(true);
 
     try {
-      const podUrls = await getPodUrlAll(session.info.webId!, {
-        fetch: session.fetch,
-      });
+      const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
       const policyUrl = `${podUrls[0]}${POLICY_PATH}`;
-
-      const dataset = await getSolidDataset(policyUrl, {
-        fetch: session.fetch,
-      });
-
+      const dataset = await getSolidDataset(policyUrl, { fetch: session.fetch });
       const parsed: Policy[] = [];
 
-      getThingAll(dataset).forEach((thing) => {
+      getThingAll(dataset).forEach((thing: any) => {
         const types = getUrlAll(thing, `${RDF}type`);
-        if (!types.some((t) => t.includes('Policy'))) return;
+        if (!types.some((t: string) => t.includes('Policy'))) return;
 
         const title = getStringNoLocaleAll(thing, `${DCT}title`)[0] || 'Untitled Policy';
         const description = getStringNoLocaleAll(thing, `${DCT}description`)[0] || '';
         const target = getUrlAll(thing, `${ODRL}target`)[0] || '';
         const active = getBoolean(thing, `${FORCE}policyActive`) ?? true;
         const createdAt = getDatetime(thing, `${DCT}created`) ?? undefined;
-
-        // Simplified constraint parsing
         const constraints: PolicyConstraint[] = [{ type: 'count', operator: 'lteq', value: 1 }];
 
         parsed.push({
@@ -500,11 +383,8 @@ export default function AuditDashboardPage() {
     setLoadingPrivacy(true);
 
     try {
-      const podUrls = await getPodUrlAll(session.info.webId!, {
-        fetch: session.fetch,
-      });
+      const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
       const mappingUrl = `${podUrls[0]}${PRIVACY_MAPPING_PATH}`;
-
       let dataset;
       try {
         dataset = await getSolidDataset(mappingUrl, { fetch: session.fetch });
@@ -515,12 +395,10 @@ export default function AuditDashboardPage() {
       const mappings: PrivacyMapping[] = [];
       const fields = new Set<string>();
 
-      getThingAll(dataset).forEach((thing) => {
+      getThingAll(dataset).forEach((thing: any) => {
         const fieldIri = getUrlAll(thing, `${EX}fieldIri`)[0];
         if (!fieldIri) return;
-
         fields.add(fieldIri);
-
         mappings.push({
           fieldIri,
           fieldLabel: getStringNoLocaleAll(thing, `${EX}fieldName`)[0] || shortIri(fieldIri),
@@ -530,7 +408,6 @@ export default function AuditDashboardPage() {
         });
       });
 
-      // Add common fields
       const commonFields = [
         { iri: 'https://schema.org/bloodType', label: 'Blood Type', sensitive: true, category: 'dpv:SpecialCategoryPersonalData', type: 'dpv:HealthData' },
         { iri: 'https://schema.org/identifier', label: 'Identifier', sensitive: true, category: 'dpv:PersonalData', type: 'dpv:PersonalIdentifier' },
@@ -559,17 +436,14 @@ export default function AuditDashboardPage() {
   };
 
   /* =========================
-     SAVE POLICY (FIXED buildThing USAGE)
+     ✅ SAVE POLICY (FIXED: No buildThing)
   ========================= */
   const savePolicy = async (policy: Policy) => {
     if (!session?.info?.webId) return;
 
     try {
-      const podUrls = await getPodUrlAll(session.info.webId!, {
-        fetch: session.fetch,
-      });
+      const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
       const policyUrl = `${podUrls[0]}${POLICY_PATH}`;
-
       let dataset;
       try {
         dataset = await getSolidDataset(policyUrl, { fetch: session.fetch });
@@ -580,13 +454,14 @@ export default function AuditDashboardPage() {
       // ✅ FIX: buildThing accepts Thing directly, not { thing, url }
       let policyThing;
       if (policy.id.startsWith('http')) {
-        const existingThing = getThingAll(dataset).find((t) => t.url === policy.id);
-        policyThing = existingThing ? buildThing(existingThing) : createThing({ url: policy.id });
+        const existingThing = getThingAll(dataset).find((t: any) => t.url === policy.id);
+        // ✅ existingThing is already ThingPersisted, or create new
+        policyThing = existingThing ?? createThing({ url: policy.id });
       } else {
         policyThing = createThing({ url: `${podUrls[0]}${POLICY_PATH}#${policy.id}` });
       }
 
-      // Set properties (all setters return new Thing, must reassign)
+      // ✅ Set properties (setters return new Thing, must reassign)
       policyThing = setUrl(policyThing, `${RDF}type`, `${ODRL}Policy`);
       policyThing = setStringNoLocale(policyThing, `${DCT}title`, policy.title);
       policyThing = setStringNoLocale(policyThing, `${DCT}description`, policy.description || '');
@@ -613,11 +488,8 @@ export default function AuditDashboardPage() {
     if (!session?.info?.webId) return;
 
     try {
-      const podUrls = await getPodUrlAll(session.info.webId!, {
-        fetch: session.fetch,
-      });
+      const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
       const mappingUrl = `${podUrls[0]}${PRIVACY_MAPPING_PATH}`;
-
       let dataset = createSolidDataset();
 
       privacyMappings.forEach((mapping, idx) => {
@@ -726,7 +598,6 @@ export default function AuditDashboardPage() {
   ========================= */
   const SchemaVisualization = ({ fields }: { fields: AccessedField[] }) => {
     if (fields.length === 0) return <Text fontSize="sm" color="gray.500">No schema data available</Text>;
-    
     return (
       <VStack align="stretch" spacing={2} maxH="200px" overflowY="auto">
         {fields.map((field, idx) => (
@@ -740,9 +611,9 @@ export default function AuditDashboardPage() {
                 <Tag size="sm" colorScheme={field.isSensitive ? 'red' : 'blue'}>
                   {field.isSensitive ? 'Sensitive' : 'Normal'}
                 </Tag>
-                <ChakraTooltip label={field.dataCategory}>
+                <Tooltip label={field.dataCategory}>
                   <Tag size="sm" variant="outline">{shortIri(field.personalDataType)}</Tag>
-                </ChakraTooltip>
+                </Tooltip>
               </HStack>
             </Flex>
             {field.fieldValue && <Text fontSize="xs" mt={1} color="gray.700">Value: <Code>{field.fieldValue}</Code></Text>}
@@ -923,7 +794,7 @@ export default function AuditDashboardPage() {
                       )}
                       
                       {/* View Schema Button */}
-                      <Button size="xs" variant="ghost" leftIcon={<ViewIcon />} onClick={() => { /* Could open modal with SchemaVisualization */ }}>
+                      <Button size="xs" variant="ghost" leftIcon={<ViewIcon />} onClick={() => {}}>
                         View Schema Details
                       </Button>
                     </VStack>
@@ -940,13 +811,10 @@ export default function AuditDashboardPage() {
               <CardBody>
                 {loading ? <Spinner /> : (
                   <VStack align="stretch" spacing={4}>
-                    {/* Group fields by sensitivity */}
                     {['Sensitive', 'Normal'].map((category) => {
                       const categoryFields = logs.flatMap((l) => l.fields).filter((f) => (category === 'Sensitive') === f.isSensitive);
                       const uniqueFields = Array.from(new Map(categoryFields.map((f) => [f.fieldIri, f])).values());
-                      
                       if (uniqueFields.length === 0) return null;
-                      
                       return (
                         <Box key={category}>
                           <Text fontWeight="medium" mb={2} color={category === 'Sensitive' ? 'red.600' : 'blue.600'}>
