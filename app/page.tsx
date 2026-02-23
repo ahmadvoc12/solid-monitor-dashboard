@@ -130,7 +130,7 @@ const FIELD_LABELS: Record<string, string> = {
 };
 
 /* ======================================================
-   ✅ CLEAN IRI - Remove trailing/leading spaces (CRITICAL FIX)
+   ✅ CLEAN IRI - Remove trailing/leading spaces (CRITICAL)
 ====================================================== */
 function cleanIRI(iri: string): string {
   if (!iri) return iri;
@@ -162,190 +162,110 @@ function generatePolicyId() {
   return `policy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function generateUUID() {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-    const r = Math.random() * 16 | 0;
-    const v = c === 'x' ? r : (r & 0x3 | 0x8);
-    return v.toString(16);
-  });
-}
-
 /* ======================================================
-   TYPES
-====================================================== */
-type AccessedField = {
-  fieldIri: string;
-  fieldName: string;
-  fieldValue: string;
-  isSensitive: boolean;
-  dataCategory: string;
-  personalDataType: string;
-};
-
-type PolicyEvaluation = {
-  evaluatedPolicy: string;
-  evaluationResult: 'ALLOWED' | 'VIOLATION';
-  evaluationReason: string;
-  targetAsset: string;
-};
-
-type FieldViolation = {
-  violatedField: string;
-  violatedPolicy: string;
-  observedCount: number;
-  allowedLimit: number;
-};
-
-type AccessLogEntry = {
-  id: string;
-  accessId: string;
-  startedAt: Date | null;
-  app: string;
-  decision: 'ALLOWED' | 'VIOLATION';
-  accessMethod: string;
-  accessedResource: string;
-  fields: AccessedField[];
-  policyEvaluations: PolicyEvaluation[];
-  violations: FieldViolation[];
-  hasSensitiveData: boolean;
-  violatedPolicies: string[];
-};
-
-type PolicyConstraint = {
-  type: 'count' | 'timeWindow' | 'location';
-  operator: 'lteq' | 'gteq' | 'eq';
-  value: string | number;
-  unit?: 'hours' | 'days' | 'km';
-};
-
-type Policy = {
-  id: string;
-  title: string;
-  description: string;
-  targetField: string;
-  targetIRI?: string;
-  active: boolean;
-  constraints: PolicyConstraint[];
-  createdAt?: Date;
-};
-
-type PrivacyMapping = {
-  fieldIri: string;
-  fieldLabel: string;
-  isSensitive: boolean;
-  dataCategory: string;
-  personalDataType: string;
-};
-
-/* ======================================================
-   HELPERS
-====================================================== */
-function extractAppFromResource(resource: string) {
-  const idx = resource.indexOf('/public/');
-  if (idx === -1) return resource;
-  const segment = resource.substring(0, idx).split('/').filter(Boolean).pop();
-  return segment || 'Unknown';
-}
-
-/* ======================================================
-   ✅ PARSE ACCESS LOG ENTRY - With robust IRI cleaning
+   ✅ PARSE ACCESS LOG ENTRY - With robust error handling
 ====================================================== */
 function parseAccessLogEntry(thing: any): AccessLogEntry | null {
-  const types = getUrlAll(thing, `${RDF}type`);
-  if (!types.some((t: string) => t.includes('Activity'))) return null;
-  
-  const decision = getStringNoLocaleAll(thing, `${FORCE}decision`)[0];
-  if (!decision) return null;
-  
-  const accessId = thing.url.split('#').pop() ?? thing.url;
-  const startedAt = getDatetime(thing, `${PROV}startedAtTime`) ?? null;
-  const app = getStringNoLocaleAll(thing, `${PROV}wasAssociatedWith`)[0]?.split('#').pop() ?? 'Unknown';
-  const accessMethod = getStringNoLocaleAll(thing, `${FORCE}accessMethod`)[0] ?? 'GET';
-  const accessedResource = cleanIRI(getUrlAll(thing, `${FORCE}accessedResource`)[0] ?? '');
-  
-  // Parse fields from hasFieldsBundle
-  const fields: AccessedField[] = [];
-  const fieldsBundle = getUrlAll(thing, `${FORCE}hasFieldsBundle`)[0];
-  if (fieldsBundle) {
-    getThingAll(thing.dataset).forEach((fieldThing: any) => {
-      const fieldTypes = getUrlAll(fieldThing, `${RDF}type`);
-      if (!fieldTypes.some((t: string) => t.includes('AccessedDataField'))) return;
-      const belongsToBundle = getUrlAll(fieldThing, `${FORCE}belongsToBundle`)[0];
-      if (belongsToBundle !== fieldsBundle) return;
-      
-      const rawIri = getUrlAll(fieldThing, `${FORCE}fieldIRI`)[0] ?? '';
-      const cleanIri = cleanIRI(rawIri);
-      
-      fields.push({
-        fieldIri: cleanIri,
-        fieldName: getFieldLabel(cleanIri),
-        fieldValue: getStringNoLocaleAll(fieldThing, `${FORCE}fieldValue`)[0] ?? '',
-        isSensitive: getBoolean(fieldThing, `${FORCE}isSensitive`) ?? false,
-        dataCategory: getUrlAll(fieldThing, `${FORCE}dataCategory`)[0] ?? 'dpv:PersonalData',
-        personalDataType: getUrlAll(fieldThing, `${FORCE}personalDataType`)[0] ?? 'dpv:Data',
+  try {
+    const types = getUrlAll(thing, `${RDF}type`);
+    if (!types.some((t: string) => t.includes('Activity'))) return null;
+    
+    const decision = getStringNoLocaleAll(thing, `${FORCE}decision`)[0];
+    if (!decision) return null;
+    
+    const accessId = thing.url.split('#').pop() ?? thing.url;
+    const startedAt = getDatetime(thing, `${PROV}startedAtTime`) ?? null;
+    const app = getStringNoLocaleAll(thing, `${PROV}wasAssociatedWith`)[0]?.split('#').pop() ?? 'Unknown';
+    const accessMethod = getStringNoLocaleAll(thing, `${FORCE}accessMethod`)[0] ?? 'GET';
+    const accessedResource = cleanIRI(getUrlAll(thing, `${FORCE}accessedResource`)[0] ?? '');
+    
+    // Parse fields from hasFieldsBundle
+    const fields: AccessedField[] = [];
+    const fieldsBundle = getUrlAll(thing, `${FORCE}hasFieldsBundle`)[0];
+    if (fieldsBundle) {
+      getThingAll(thing.dataset).forEach((fieldThing: any) => {
+        const fieldTypes = getUrlAll(fieldThing, `${RDF}type`);
+        if (!fieldTypes.some((t: string) => t.includes('AccessedDataField'))) return;
+        const belongsToBundle = getUrlAll(fieldThing, `${FORCE}belongsToBundle`)[0];
+        if (belongsToBundle !== fieldsBundle) return;
+        
+        const rawIri = getUrlAll(fieldThing, `${FORCE}fieldIRI`)[0] ?? '';
+        const cleanIri = cleanIRI(rawIri);
+        
+        fields.push({
+          fieldIri: cleanIri,
+          fieldName: getFieldLabel(cleanIri),
+          fieldValue: getStringNoLocaleAll(fieldThing, `${FORCE}fieldValue`)[0] ?? '',
+          isSensitive: getBoolean(fieldThing, `${FORCE}isSensitive`) ?? false,
+          dataCategory: getUrlAll(fieldThing, `${FORCE}dataCategory`)[0] ?? 'dpv:PersonalData',
+          personalDataType: getUrlAll(fieldThing, `${FORCE}personalDataType`)[0] ?? 'dpv:Data',
+        });
       });
-    });
-  }
-  
-  // Parse policy evaluations from hasPolicyBundle
-  const policyEvaluations: PolicyEvaluation[] = [];
-  const policyBundle = getUrlAll(thing, `${FORCE}hasPolicyBundle`)[0];
-  if (policyBundle) {
-    getThingAll(thing.dataset).forEach((evalThing: any) => {
-      const evalTypes = getUrlAll(evalThing, `${RDF}type`);
-      if (!evalTypes.some((t: string) => t.includes('PolicyEvaluation'))) return;
-      const belongsToBundle = getUrlAll(evalThing, `${FORCE}belongsToBundle`)[0];
-      if (belongsToBundle !== policyBundle) return;
-      policyEvaluations.push({
-        evaluatedPolicy: cleanIRI(getUrlAll(evalThing, `${FORCE}evaluatedPolicy`)[0] ?? ''),
-        evaluationResult: (getStringNoLocaleAll(evalThing, `${FORCE}evaluationResult`)[0] as 'ALLOWED' | 'VIOLATION') ?? 'ALLOWED',
-        evaluationReason: getStringNoLocaleAll(evalThing, `${FORCE}evaluationReason`)[0] ?? '',
-        targetAsset: cleanIRI(getUrlAll(evalThing, `${FORCE}targetAsset`)[0] ?? ''),
+    }
+    
+    // Parse policy evaluations from hasPolicyBundle
+    const policyEvaluations: PolicyEvaluation[] = [];
+    const policyBundle = getUrlAll(thing, `${FORCE}hasPolicyBundle`)[0];
+    if (policyBundle) {
+      getThingAll(thing.dataset).forEach((evalThing: any) => {
+        const evalTypes = getUrlAll(evalThing, `${RDF}type`);
+        if (!evalTypes.some((t: string) => t.includes('PolicyEvaluation'))) return;
+        const belongsToBundle = getUrlAll(evalThing, `${FORCE}belongsToBundle`)[0];
+        if (belongsToBundle !== policyBundle) return;
+        policyEvaluations.push({
+          evaluatedPolicy: cleanIRI(getUrlAll(evalThing, `${FORCE}evaluatedPolicy`)[0] ?? ''),
+          evaluationResult: (getStringNoLocaleAll(evalThing, `${FORCE}evaluationResult`)[0] as 'ALLOWED' | 'VIOLATION') ?? 'ALLOWED',
+          evaluationReason: getStringNoLocaleAll(evalThing, `${FORCE}evaluationReason`)[0] ?? '',
+          targetAsset: cleanIRI(getUrlAll(evalThing, `${FORCE}targetAsset`)[0] ?? ''),
+        });
       });
-    });
-  }
-  
-  // Parse violations from hasViolationBundle
-  const violations: FieldViolation[] = [];
-  const violatedPolicies: string[] = [];
-  const violationBundle = getUrlAll(thing, `${FORCE}hasViolationBundle`)[0];
-  if (violationBundle) {
-    getThingAll(thing.dataset).forEach((violThing: any) => {
-      const violTypes = getUrlAll(violThing, `${RDF}type`);
-      if (!violTypes.some((t: string) => t.includes('PolicyViolation'))) return;
-      const belongsToBundle = getUrlAll(violThing, `${FORCE}belongsToBundle`)[0];
-      if (belongsToBundle !== violationBundle) return;
-      
-      getUrlAll(violThing, `${FORCE}violatedPolicy`).forEach((p: string) => violatedPolicies.push(cleanIRI(p)));
-      
-      getUrlAll(violThing, `${FORCE}hasFieldViolation`).forEach((fvUrl: string) => {
-        const fvThing = getThingAll(thing.dataset).find((t: any) => t.url === fvUrl);
-        if (fvThing) {
-          violations.push({
-            violatedField: cleanIRI(getUrlAll(fvThing, `${FORCE}violatedField`)[0] ?? ''),
-            violatedPolicy: cleanIRI(getUrlAll(fvThing, `${FORCE}violatedPolicy`)[0] ?? ''),
-            observedCount: getInteger(fvThing, `${FORCE}observedCount`) ?? 0,
-            allowedLimit: getInteger(fvThing, `${FORCE}allowedLimit`) ?? 0,
-          });
-        }
+    }
+    
+    // Parse violations from hasViolationBundle
+    const violations: FieldViolation[] = [];
+    const violatedPolicies: string[] = [];
+    const violationBundle = getUrlAll(thing, `${FORCE}hasViolationBundle`)[0];
+    if (violationBundle) {
+      getThingAll(thing.dataset).forEach((violThing: any) => {
+        const violTypes = getUrlAll(violThing, `${RDF}type`);
+        if (!violTypes.some((t: string) => t.includes('PolicyViolation'))) return;
+        const belongsToBundle = getUrlAll(violThing, `${FORCE}belongsToBundle`)[0];
+        if (belongsToBundle !== violationBundle) return;
+        
+        getUrlAll(violThing, `${FORCE}violatedPolicy`).forEach((p: string) => violatedPolicies.push(cleanIRI(p)));
+        
+        getUrlAll(violThing, `${FORCE}hasFieldViolation`).forEach((fvUrl: string) => {
+          const fvThing = getThingAll(thing.dataset).find((t: any) => t.url === fvUrl);
+          if (fvThing) {
+            violations.push({
+              violatedField: cleanIRI(getUrlAll(fvThing, `${FORCE}violatedField`)[0] ?? ''),
+              violatedPolicy: cleanIRI(getUrlAll(fvThing, `${FORCE}violatedPolicy`)[0] ?? ''),
+              observedCount: getInteger(fvThing, `${FORCE}observedCount`) ?? 0,
+              allowedLimit: getInteger(fvThing, `${FORCE}allowedLimit`) ?? 0,
+            });
+          }
+        });
       });
-    });
+    }
+    
+    return {
+      id: thing.url,
+      accessId,
+      startedAt,
+      app,
+      decision: decision as 'ALLOWED' | 'VIOLATION',
+      accessMethod,
+      accessedResource,
+      fields,
+      policyEvaluations,
+      violations,
+      hasSensitiveData: fields.some((f) => f.isSensitive),
+      violatedPolicies,
+    };
+  } catch (err) {
+    console.error('Error parsing access log entry:', err);
+    return null;
   }
-  
-  return {
-    id: thing.url,
-    accessId,
-    startedAt,
-    app,
-    decision: decision as 'ALLOWED' | 'VIOLATION',
-    accessMethod,
-    accessedResource,
-    fields,
-    policyEvaluations,
-    violations,
-    hasSensitiveData: fields.some((f) => f.isSensitive),
-    violatedPolicies,
-  };
 }
 
 /* ======================================================
@@ -405,8 +325,17 @@ export default function AuditDashboardPage() {
         const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
         const accessLogUrl = `${podUrls[0]}${ACCESS_LOG_PATH}`;
         
-        // ✅ Try to fetch the dataset
+        // ✅ Try to fetch the dataset with error handling
         const dataset = await getSolidDataset(accessLogUrl, { fetch: session.fetch });
+        
+        // ✅ Check if dataset has graphs property (valid SolidDataset)
+        if (!dataset || typeof dataset !== 'object' || !('graphs' in dataset)) {
+          console.warn('Invalid dataset structure, using empty logs');
+          setLogs([]);
+          setLoading(false);
+          return;
+        }
+        
         const parsed: AccessLogEntry[] = [];
         
         getThingAll(dataset).forEach((thing) => {
@@ -430,6 +359,8 @@ export default function AuditDashboardPage() {
           errorMsg = 'Access denied. Ensure ACL allows read access to private/audit/access/access-log.ttl';
         } else if (err?.status === 404) {
           errorMsg = 'Audit log file not found. It will be created after first access.';
+        } else if (err?.message?.includes('graphs')) {
+          errorMsg = 'Invalid data format. The file may be corrupted.';
         }
         
         toast({
@@ -595,19 +526,19 @@ export default function AuditDashboardPage() {
       if (constraint?.type === 'count') {
         // Create constraint blank node
         const constraintThing = createThing({ url: `${policyThing.url}#constraint-${Date.now()}` });
-        setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}count`);
-        setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
-        setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value)); // ✅ FIX: Use setInteger for proper datatype
+        constraintThing = setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}count`);
+        constraintThing = setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
+        constraintThing = setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value)); // ✅ FIX: Use setInteger for proper datatype
         
         // Create permission blank node that references constraint
         const permissionThing = createThing({ url: `${policyThing.url}#permission-${Date.now()}` });
-        setUrl(permissionThing, `${ODRL}assigner`, `${EX}pod-owner`);
-        setUrl(permissionThing, `${ODRL}assignee`, `${EX}any-app`);
-        setUrl(permissionThing, `${ODRL}action`, `${ODRL}read`);
-        setUrl(permissionThing, `${ODRL}constraint`, constraintThing.url);
+        permissionThing = setUrl(permissionThing, `${ODRL}assigner`, `${EX}pod-owner`);
+        permissionThing = setUrl(permissionThing, `${ODRL}assignee`, `${EX}any-app`);
+        permissionThing = setUrl(permissionThing, `${ODRL}action`, `${ODRL}read`);
+        permissionThing = setUrl(permissionThing, `${ODRL}constraint`, constraintThing.url);
         
         // Link permission to policy
-        setUrl(policyThing, `${ODRL}permission`, permissionThing.url);
+        policyThing = setUrl(policyThing, `${ODRL}permission`, permissionThing.url);
         
         // Add blank nodes to dataset
         dataset = setThing(dataset, constraintThing);
@@ -627,7 +558,7 @@ export default function AuditDashboardPage() {
   };
 
   /* =========================
-     ✅ SAVE PRIVACY MAPPINGS
+     ✅ SAVE PRIVACY MAPPINGS - FIX: Reassign setter return values
   ========================= */
   const savePrivacyMappings = async () => {
     if (!session?.info?.webId) return;
@@ -637,20 +568,34 @@ export default function AuditDashboardPage() {
       let dataset = createSolidDataset();
       
       privacyMappings.forEach((mapping, idx) => {
-        const thing = createThing({ url: `${mappingUrl}#mapping-${idx}` });
-        setUrl(thing, `${EX}fieldIri`, mapping.fieldIri);
-        setStringNoLocale(thing, `${EX}fieldName`, mapping.fieldLabel);
-        setBoolean(thing, `${EX}isSensitive`, mapping.isSensitive);
-        setUrl(thing, `${EX}dataCategory`, mapping.dataCategory);
-        setUrl(thing, `${EX}personalDataType`, mapping.personalDataType);
+        // ✅ FIX: Create thing and REASSIGN return values from setters
+        let thing = createThing({ url: `${mappingUrl}#mapping-${idx}` });
+        
+        thing = setUrl(thing, `${EX}fieldIri`, mapping.fieldIri);              // ✅ Reassign
+        thing = setStringNoLocale(thing, `${EX}fieldName`, mapping.fieldLabel); // ✅ Reassign
+        thing = setBoolean(thing, `${EX}isSensitive`, mapping.isSensitive);     // ✅ Reassign
+        thing = setUrl(thing, `${EX}dataCategory`, mapping.dataCategory);       // ✅ Reassign
+        thing = setUrl(thing, `${EX}personalDataType`, mapping.personalDataType); // ✅ Reassign
+        
         dataset = setThing(dataset, thing);
       });
       
       await saveSolidDatasetAt(mappingUrl, dataset, { fetch: session.fetch });
       toast({ title: 'Privacy settings saved', description: 'Field sensitivity mappings have been updated', status: 'success' });
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to save privacy mappings:', err);
-      toast({ title: 'Failed to save privacy settings', status: 'error' });
+      
+      // ✅ Better error message for 412 Precondition Failed
+      if (err?.errorCode === 'H412' || err?.statusCode === 412) {
+        toast({
+          title: 'Failed to save privacy settings',
+          description: 'Precondition failed. The file may have been modified by another process. Please reload and try again.',
+          status: 'error',
+          duration: 6000,
+        });
+      } else {
+        toast({ title: 'Failed to save privacy settings', status: 'error' });
+      }
       throw err;
     }
   };
