@@ -96,6 +96,7 @@ import {
   setBoolean,
   setInteger,
   ThingPersisted,
+  SolidDataset,
 } from '@inrupt/solid-client';
 
 /* ======================================================
@@ -277,9 +278,9 @@ type PrivacyMapping = {
 };
 
 /* ======================================================
-   PARSE ACCESS LOG ENTRY
+   ✅ PARSE ACCESS LOG ENTRY - FIX: Dataset Parameter Added
 ====================================================== */
-function parseAccessLogEntry(thing: any): AccessLogEntry | null {
+function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry | null {
   try {
     const types = getUrlAll(thing, `${RDF}type`);
     if (!types.some((t: string) => t.includes('Activity'))) return null;
@@ -294,11 +295,13 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
     const accessMethod = getStringNoLocaleAll(thing, `${FORCE}accessMethod`)[0] ?? 'GET';
     const accessedResource = cleanIRI(getUrlAll(thing, `${FORCE}accessedResource`)[0] ?? '');
     
+    // --- PARSE FIELDS ---
     const fields: AccessedField[] = [];
     const fieldsBundle = getUrlAll(thing, `${FORCE}hasFieldsBundle`)[0];
     
-    if (fieldsBundle && thing.dataset) {
-      getThingAll(thing.dataset).forEach((fieldThing: any) => {
+    // ✅ FIX: Use 'dataset' parameter instead of 'thing.dataset'
+    if (fieldsBundle) {
+      getThingAll(dataset).forEach((fieldThing: any) => {
         const fieldTypes = getUrlAll(fieldThing, `${RDF}type`);
         if (!fieldTypes.some((t: string) => t.includes('AccessedDataField'))) return;
         
@@ -319,10 +322,11 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
       });
     }
     
+    // --- PARSE POLICY EVALUATIONS ---
     const policyEvaluations: PolicyEvaluation[] = [];
     const policyBundle = getUrlAll(thing, `${FORCE}hasPolicyBundle`)[0];
-    if (policyBundle && thing.dataset) {
-      getThingAll(thing.dataset).forEach((evalThing: any) => {
+    if (policyBundle) {
+      getThingAll(dataset).forEach((evalThing: any) => {
         const evalTypes = getUrlAll(evalThing, `${RDF}type`);
         if (!evalTypes.some((t: string) => t.includes('PolicyEvaluation'))) return;
         
@@ -338,23 +342,28 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
       });
     }
     
+    // --- PARSE VIOLATIONS ---
     const violations: FieldViolation[] = [];
     const violatedPolicies: string[] = [];
     const violationBundle = getUrlAll(thing, `${FORCE}hasViolationBundle`)[0];
-    if (violationBundle && thing.dataset) {
-      getThingAll(thing.dataset).forEach((violThing: any) => {
+    
+    // ✅ FIX: Use 'dataset' parameter instead of 'thing.dataset'
+    if (violationBundle) {
+      getThingAll(dataset).forEach((violThing: any) => {
         const violTypes = getUrlAll(violThing, `${RDF}type`);
         if (!violTypes.some((t: string) => t.includes('PolicyViolation'))) return;
         
         const belongsToBundle = getUrlAll(violThing, `${FORCE}belongsToBundle`)[0];
         if (!bundlesMatch(belongsToBundle, violationBundle)) return;
         
+        // Collect violated policy URIs
         getUrlAll(violThing, `${FORCE}violatedPolicy`).forEach((p: string) => 
           violatedPolicies.push(cleanIRI(p))
         );
         
+        // Parse nested FieldViolations via hasFieldViolation
         getUrlAll(violThing, `${FORCE}hasFieldViolation`).forEach((fvUrl: string) => {
-          const fvThing = getThingAll(thing.dataset).find((t: any) => t.url === fvUrl);
+          const fvThing = getThingAll(dataset).find((t: any) => t.url === fvUrl);
           if (fvThing) {
             violations.push({
               violatedField: cleanIRI(getUrlAll(fvThing, `${FORCE}violatedField`)[0] ?? ''),
@@ -436,7 +445,7 @@ export default function AuditDashboardPage() {
   }, [isLoggedIn, router]);
 
   /* =========================
-     LOAD ACCESS LOG
+     LOAD ACCESS LOG - FIX: Pass dataset to parser
   ========================= */
   useEffect(() => {
     if (!session?.info?.webId) return;
@@ -458,9 +467,10 @@ export default function AuditDashboardPage() {
         
         const parsed: AccessLogEntry[] = [];
         
+        // ✅ FIX: Pass 'dataset' to parseAccessLogEntry
         getThingAll(dataset).forEach((thing) => {
           try {
-            const entry = parseAccessLogEntry(thing);
+            const entry = parseAccessLogEntry(thing, dataset);
             if (entry) {
               parsed.push(entry);
             }
@@ -1127,7 +1137,6 @@ export default function AuditDashboardPage() {
               <Text fontWeight="bold" mb={3}>Existing Policies</Text>
               {loadingPolicies ? <Spinner /> : (
                 <Table variant="simple" size="sm">
-                  {/* ✅ FIX: Ensured all <Th> tags use PascalCase correctly */}
                   <Thead>
                     <Tr>
                       <Th>Policy</Th>
