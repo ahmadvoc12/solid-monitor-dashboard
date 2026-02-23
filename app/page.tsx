@@ -1,18 +1,76 @@
 'use client';
 
 import {
-  Box, Text, Spinner, SimpleGrid, useToast, Flex, Divider, Badge, VStack, Tag, Input, Select,
-  HStack, Button, Modal, ModalOverlay, ModalContent, ModalHeader, ModalBody, ModalCloseButton,
-  ModalFooter, Switch, FormControl, FormLabel, FormHelperText, Table, Thead, Tbody, Tr, Th, Td,
-  Accordion, AccordionItem, AccordionButton, AccordionPanel, AccordionIcon, NumberInput,
-  NumberInputField, NumberInputStepper, NumberIncrementStepper, NumberDecrementStepper, useDisclosure,
-  IconButton, Tooltip, Alert, AlertIcon, Card, CardBody, CardHeader, Stat, StatLabel, StatNumber,
-  StatHelpText, Tabs, TabList, TabPanels, Tab, TabPanel, Icon, Link, Code,
+  Box,
+  Text,
+  Spinner,
+  SimpleGrid,
+  useToast,
+  Flex,
+  Divider,
+  Badge,
+  VStack,
+  Tag,
+  Input,
+  Select,
+  HStack,
+  Button,
+  Modal,
+  ModalOverlay,
+  ModalContent,
+  ModalHeader,
+  ModalBody,
+  ModalCloseButton,
+  ModalFooter,
+  Switch,
+  FormControl,
+  FormLabel,
+  FormHelperText,
+  Table,
+  Thead,
+  Tbody,
+  Tr,
+  Th,
+  Td,
+  Accordion,
+  AccordionItem,
+  AccordionButton,
+  AccordionPanel,
+  AccordionIcon,
+  NumberInput,
+  NumberInputField,
+  NumberInputStepper,
+  NumberIncrementStepper,
+  NumberDecrementStepper,
+  useDisclosure,
+  IconButton,
+  Tooltip,
+  Alert,
+  AlertIcon,
+  Card,
+  CardBody,
+  CardHeader,
+  Stat,
+  StatLabel,
+  StatNumber,
+  StatHelpText,
+  Tabs,
+  TabList,
+  TabPanels,
+  Tab,
+  TabPanel,
+  Link,
+  Code,
   Tooltip as ChakraTooltip,
 } from '@chakra-ui/react';
 
 import {
-  EditIcon, DeleteIcon, AddIcon, InfoIcon, ViewIcon, WarningIcon, CheckIcon, CloseIcon, ExternalLinkIcon,
+  EditIcon,
+  DeleteIcon,
+  AddIcon,
+  InfoIcon,
+  ViewIcon,
+  ExternalLinkIcon,
 } from '@chakra-ui/icons';
 
 import { useEffect, useMemo, useState } from 'react';
@@ -20,9 +78,23 @@ import { useRouter } from 'next/navigation';
 import { useSolidSession } from '@/contexts/SolidSessionContext';
 
 import {
-  getSolidDataset, getThingAll, getUrlAll, getDatetime, getPodUrlAll, getStringNoLocaleAll,
-  createThing, setUrl, setDatetime, setStringNoLocale, saveSolidDatasetAt, getBoolean, getInteger,
-  createSolidDataset, setThing, setBoolean, ThingPersisted,
+  getSolidDataset,
+  getThingAll,
+  getUrlAll,
+  getDatetime,
+  getPodUrlAll,
+  getStringNoLocaleAll,
+  createThing,
+  setUrl,
+  setDatetime,
+  setStringNoLocale,
+  saveSolidDatasetAt,
+  getBoolean,
+  getInteger,
+  createSolidDataset,
+  setThing,
+  setBoolean,
+  ThingPersisted,
 } from '@inrupt/solid-client';
 
 /* ======================================================
@@ -41,6 +113,38 @@ const RDF = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
 const ACCESS_LOG_PATH = 'private/audit/access/access-log.ttl';
 const POLICY_PATH = 'private/audit/access/monitor-policy.ttl';
 const PRIVACY_MAPPING_PATH = 'private/audit/dpv-mapping.ttl';
+
+/* ======================================================
+   FIELD LABEL MAPPING - FIX "Unknown Field"
+====================================================== */
+const FIELD_LABELS: Record<string, string> = {
+  'https://schema.org/bloodType': 'Blood Type',
+  'https://schema.org/identifier': 'Identifier',
+  'http://purl.org/dc/terms/created': 'Created Timestamp',
+  'https://schema.org/email': 'Email',
+  'https://schema.org/name': 'Name',
+  'https://schema.org/age': 'Age',
+  'https://schema.org/gender': 'Gender',
+  'https://schema.org/hairColor': 'Hair Colour',
+};
+
+/* ======================================================
+   CLEAN IRI - Remove trailing/leading spaces
+====================================================== */
+function cleanIRI(iri: string): string {
+  if (!iri) return iri;
+  return iri
+    .replace(/<\s+/g, '<')
+    .replace(/\s+>/g, '>')
+    .replace(/\s+$/g, '')
+    .replace(/^\s+/g, '')
+    .trim();
+}
+
+function getFieldLabel(iri: string): string {
+  const cleanIri = cleanIRI(iri).replace(/^<|>$/g, '');
+  return FIELD_LABELS[cleanIri] || cleanIri.split('#').pop() || cleanIri.split('/').pop() || 'Unknown Field';
+}
 
 /* ======================================================
    TYPES
@@ -95,6 +199,7 @@ type Policy = {
   title: string;
   description: string;
   targetField: string;
+  targetIRI?: string;
   active: boolean;
   constraints: PolicyConstraint[];
   createdAt?: Date;
@@ -133,17 +238,23 @@ function generatePolicyId() {
   return `policy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/* ======================================================
+   PARSE ACCESS LOG ENTRY
+====================================================== */
 function parseAccessLogEntry(thing: any): AccessLogEntry | null {
   const types = getUrlAll(thing, `${RDF}type`);
   if (!types.some((t: string) => t.includes('Activity'))) return null;
+  
   const decision = getStringNoLocaleAll(thing, `${FORCE}decision`)[0];
   if (!decision) return null;
+  
   const accessId = thing.url.split('#').pop() ?? thing.url;
   const startedAt = getDatetime(thing, `${PROV}startedAtTime`) ?? null;
   const app = getStringNoLocaleAll(thing, `${PROV}wasAssociatedWith`)[0]?.split('#').pop() ?? 'Unknown';
   const accessMethod = getStringNoLocaleAll(thing, `${FORCE}accessMethod`)[0] ?? 'GET';
   const accessedResource = getUrlAll(thing, `${FORCE}accessedResource`)[0] ?? '';
   
+  // Parse fields from hasFieldsBundle
   const fields: AccessedField[] = [];
   const fieldsBundle = getUrlAll(thing, `${FORCE}hasFieldsBundle`)[0];
   if (fieldsBundle) {
@@ -152,9 +263,13 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
       if (!fieldTypes.some((t: string) => t.includes('AccessedDataField'))) return;
       const belongsToBundle = getUrlAll(fieldThing, `${FORCE}belongsToBundle`)[0];
       if (belongsToBundle !== fieldsBundle) return;
+      
+      const rawIri = getUrlAll(fieldThing, `${FORCE}fieldIRI`)[0] ?? '';
+      const cleanIri = cleanIRI(rawIri);
+      
       fields.push({
-        fieldIri: getUrlAll(fieldThing, `${FORCE}fieldIRI`)[0] ?? '',
-        fieldName: getStringNoLocaleAll(fieldThing, `${FORCE}fieldName`)[0] ?? shortIri(getUrlAll(fieldThing, `${FORCE}fieldIRI`)[0] ?? ''),
+        fieldIri: cleanIri,
+        fieldName: getFieldLabel(cleanIri),
         fieldValue: getStringNoLocaleAll(fieldThing, `${FORCE}fieldValue`)[0] ?? '',
         isSensitive: getBoolean(fieldThing, `${FORCE}isSensitive`) ?? false,
         dataCategory: getUrlAll(fieldThing, `${FORCE}dataCategory`)[0] ?? 'dpv:PersonalData',
@@ -163,6 +278,7 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
     });
   }
   
+  // Parse policy evaluations from hasPolicyBundle
   const policyEvaluations: PolicyEvaluation[] = [];
   const policyBundle = getUrlAll(thing, `${FORCE}hasPolicyBundle`)[0];
   if (policyBundle) {
@@ -175,11 +291,12 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
         evaluatedPolicy: getUrlAll(evalThing, `${FORCE}evaluatedPolicy`)[0] ?? '',
         evaluationResult: (getStringNoLocaleAll(evalThing, `${FORCE}evaluationResult`)[0] as 'ALLOWED' | 'VIOLATION') ?? 'ALLOWED',
         evaluationReason: getStringNoLocaleAll(evalThing, `${FORCE}evaluationReason`)[0] ?? '',
-        targetAsset: getUrlAll(evalThing, `${FORCE}targetAsset`)[0] ?? '',
+        targetAsset: cleanIRI(getUrlAll(evalThing, `${FORCE}targetAsset`)[0] ?? ''),
       });
     });
   }
   
+  // Parse violations from hasViolationBundle
   const violations: FieldViolation[] = [];
   const violatedPolicies: string[] = [];
   const violationBundle = getUrlAll(thing, `${FORCE}hasViolationBundle`)[0];
@@ -189,15 +306,15 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
       if (!violTypes.some((t: string) => t.includes('PolicyViolation'))) return;
       const belongsToBundle = getUrlAll(violThing, `${FORCE}belongsToBundle`)[0];
       if (belongsToBundle !== violationBundle) return;
-      const policies = getUrlAll(violThing, `${FORCE}violatedPolicy`);
-      policies.forEach((p: string) => violatedPolicies.push(p));
-      const fieldViolations = getUrlAll(violThing, `${FORCE}hasFieldViolation`);
-      fieldViolations.forEach((fvUrl: string) => {
+      
+      getUrlAll(violThing, `${FORCE}violatedPolicy`).forEach((p: string) => violatedPolicies.push(cleanIRI(p)));
+      
+      getUrlAll(violThing, `${FORCE}hasFieldViolation`).forEach((fvUrl: string) => {
         const fvThing = getThingAll(thing.dataset).find((t: any) => t.url === fvUrl);
         if (fvThing) {
           violations.push({
-            violatedField: getUrlAll(fvThing, `${FORCE}violatedField`)[0] ?? '',
-            violatedPolicy: getUrlAll(fvThing, `${FORCE}violatedPolicy`)[0] ?? '',
+            violatedField: cleanIRI(getUrlAll(fvThing, `${FORCE}violatedField`)[0] ?? ''),
+            violatedPolicy: cleanIRI(getUrlAll(fvThing, `${FORCE}violatedPolicy`)[0] ?? ''),
             observedCount: getInteger(fvThing, `${FORCE}observedCount`) ?? 0,
             allowedLimit: getInteger(fvThing, `${FORCE}allowedLimit`) ?? 0,
           });
@@ -241,6 +358,7 @@ export default function AuditDashboardPage() {
     title: '',
     description: '',
     targetField: '',
+    targetIRI: '',
     active: true,
     constraints: [{ type: 'count', operator: 'lteq', value: 1 }],
   });
@@ -307,20 +425,42 @@ export default function AuditDashboardPage() {
       const policyUrl = `${podUrls[0]}${POLICY_PATH}`;
       const dataset = await getSolidDataset(policyUrl, { fetch: session.fetch });
       const parsed: Policy[] = [];
+      
       getThingAll(dataset).forEach((thing: any) => {
         const types = getUrlAll(thing, `${RDF}type`);
         if (!types.some((t: string) => t.includes('Policy'))) return;
+        
         const title = getStringNoLocaleAll(thing, `${DCT}title`)[0] || 'Untitled Policy';
         const description = getStringNoLocaleAll(thing, `${DCT}description`)[0] || '';
-        const target = getUrlAll(thing, `${ODRL}target`)[0] || '';
+        const target = cleanIRI(getUrlAll(thing, `${ODRL}target`)[0] || '');
         const active = getBoolean(thing, `${FORCE}policyActive`) ?? true;
         const createdAt = getDatetime(thing, `${DCT}created`) ?? undefined;
-        const constraints: PolicyConstraint[] = [{ type: 'count', operator: 'lteq', value: 1 }];
+        
+        // Parse constraint from ODRL permission structure
+        let constraintValue = 1;
+        const permissions = getUrlAll(thing, `${ODRL}permission`);
+        permissions.forEach((permUrl: string) => {
+          const permThing = getThingAll(dataset).find((t: any) => t.url === permUrl);
+          if (permThing) {
+            const constraints = getUrlAll(permThing, `${ODRL}constraint`);
+            constraints.forEach((cUrl: string) => {
+              const cThing = getThingAll(dataset).find((t: any) => t.url === cUrl);
+              if (cThing) {
+                const val = getInteger(cThing, `${ODRL}rightOperand`);
+                if (val !== null) constraintValue = val;
+              }
+            });
+          }
+        });
+        
+        const constraints: PolicyConstraint[] = [{ type: 'count', operator: 'lteq', value: constraintValue }];
+        
         parsed.push({
           id: thing.url,
           title,
           description,
           targetField: shortIri(target),
+          targetIRI: target,
           active,
           constraints,
           createdAt,
@@ -330,22 +470,11 @@ export default function AuditDashboardPage() {
     } catch (err) {
       console.error('Failed to load policies:', err);
       setPolicies([
-        {
-          id: 'default-bloodtype',
-          title: 'Blood Type Access Limit',
-          description: 'Limit bloodType access to 1 per session',
-          targetField: 'bloodType',
-          active: true,
-          constraints: [{ type: 'count', operator: 'lteq', value: 1 }],
-        },
-        {
-          id: 'default-identity',
-          title: 'Identity Access Limit',
-          description: 'Limit identifier access to 3 per session',
-          targetField: 'identifier',
-          active: true,
-          constraints: [{ type: 'count', operator: 'lteq', value: 3 }],
-        },
+        { id: 'default-bloodtype', title: 'Blood Type Access Limit', description: 'Limit bloodType access to 1 per session', targetField: 'bloodType', targetIRI: 'https://schema.org/bloodType', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 1 }] },
+        { id: 'default-identity', title: 'Identity Access Limit', description: 'Limit identifier access to 3 per session', targetField: 'identifier', targetIRI: 'https://schema.org/identifier', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 3 }] },
+        { id: 'default-age', title: 'Age Access Limit', description: 'Limit age access to 5 per session', targetField: 'age', targetIRI: 'https://schema.org/age', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 5 }] },
+        { id: 'default-gender', title: 'Gender Access Limit', description: 'Limit gender access to 5 per session', targetField: 'gender', targetIRI: 'https://schema.org/gender', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 5 }] },
+        { id: 'default-haircolour', title: 'Hair Colour Access Limit', description: 'Limit hairColour access to 5 per session', targetField: 'hairColour', targetIRI: 'https://schema.org/hairColor', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 5 }] },
       ]);
     } finally {
       setLoadingPolicies(false);
@@ -359,43 +488,40 @@ export default function AuditDashboardPage() {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
       const mappingUrl = `${podUrls[0]}${PRIVACY_MAPPING_PATH}`;
       let dataset;
-      try {
-        dataset = await getSolidDataset(mappingUrl, { fetch: session.fetch });
-      } catch {
-        dataset = createSolidDataset();
-      }
+      try { dataset = await getSolidDataset(mappingUrl, { fetch: session.fetch }); } catch { dataset = createSolidDataset(); }
+      
       const mappings: PrivacyMapping[] = [];
       const fields = new Set<string>();
+      
       getThingAll(dataset).forEach((thing: any) => {
-        const fieldIri = getUrlAll(thing, `${EX}fieldIri`)[0];
+        const fieldIri = cleanIRI(getUrlAll(thing, `${EX}fieldIri`)[0]);
         if (!fieldIri) return;
         fields.add(fieldIri);
         mappings.push({
           fieldIri,
-          fieldLabel: getStringNoLocaleAll(thing, `${EX}fieldName`)[0] || shortIri(fieldIri),
+          fieldLabel: getFieldLabel(fieldIri),
           isSensitive: getBoolean(thing, `${EX}isSensitive`) ?? false,
           dataCategory: getUrlAll(thing, `${EX}dataCategory`)[0] || 'dpv:PersonalData',
           personalDataType: getUrlAll(thing, `${EX}personalDataType`)[0] || 'dpv:Data',
         });
       });
-      const commonFields = [
-        { iri: 'https://schema.org/bloodType', label: 'Blood Type', sensitive: true, category: 'dpv:SpecialCategoryPersonalData', type: 'dpv:HealthData' },
-        { iri: 'https://schema.org/identifier', label: 'Identifier', sensitive: true, category: 'dpv:PersonalData', type: 'dpv:PersonalIdentifier' },
-        { iri: 'http://purl.org/dc/terms/created', label: 'Created Timestamp', sensitive: false, category: 'dpv:PersonalData', type: 'dpv:Data' },
-      ];
-      commonFields.forEach((cf) => {
-        if (!fields.has(cf.iri)) {
+      
+      // Add all FIELD_LABELS options
+      Object.entries(FIELD_LABELS).forEach(([iri, label]) => {
+        const cleanIri = cleanIRI(iri);
+        if (!fields.has(cleanIri)) {
           mappings.push({
-            fieldIri: cf.iri,
-            fieldLabel: cf.label,
-            isSensitive: cf.sensitive,
-            dataCategory: cf.category,
-            personalDataType: cf.type,
+            fieldIri: cleanIri,
+            fieldLabel: label,
+            isSensitive: true,
+            dataCategory: 'dpv:PersonalData',
+            personalDataType: 'dpv:Data',
           });
         }
       });
+      
       setPrivacyMappings(mappings);
-      setAvailableFields(Array.from(fields).concat(commonFields.map((f) => f.iri)));
+      setAvailableFields(Object.keys(FIELD_LABELS).map(cleanIRI));
     } catch (err) {
       console.error('Failed to load privacy mappings:', err);
     } finally {
@@ -403,20 +529,14 @@ export default function AuditDashboardPage() {
     }
   };
 
-  /* =========================
-     ✅ SAVE POLICY (FIXED: No buildThing)
-  ========================= */
   const savePolicy = async (policy: Policy) => {
     if (!session?.info?.webId) return;
     try {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
       const policyUrl = `${podUrls[0]}${POLICY_PATH}`;
       let dataset;
-      try {
-        dataset = await getSolidDataset(policyUrl, { fetch: session.fetch });
-      } catch {
-        dataset = createSolidDataset();
-      }
+      try { dataset = await getSolidDataset(policyUrl, { fetch: session.fetch }); } catch { dataset = createSolidDataset(); }
+      
       let policyThing: ThingPersisted;
       if (policy.id.startsWith('http')) {
         const existingThing = getThingAll(dataset).find((t) => t.url === policy.id);
@@ -424,14 +544,17 @@ export default function AuditDashboardPage() {
       } else {
         policyThing = createThing({ url: `${podUrls[0]}${POLICY_PATH}#${policy.id}` });
       }
+      
       policyThing = setUrl(policyThing, `${RDF}type`, `${ODRL}Policy`);
       policyThing = setStringNoLocale(policyThing, `${DCT}title`, policy.title);
       policyThing = setStringNoLocale(policyThing, `${DCT}description`, policy.description || '');
       policyThing = setDatetime(policyThing, `${DCT}created`, policy.createdAt || new Date());
-      policyThing = setUrl(policyThing, `${ODRL}target`, policy.targetField);
+      policyThing = setUrl(policyThing, `${ODRL}target`, policy.targetIRI || policy.targetField);
       policyThing = setBoolean(policyThing, `${FORCE}policyActive`, policy.active);
+      
       dataset = setThing(dataset, policyThing);
       await saveSolidDatasetAt(policyUrl, dataset, { fetch: session.fetch });
+      
       toast({ title: 'Policy saved', description: `${policy.title} has been updated`, status: 'success' });
       await loadPolicies();
     } catch (err) {
@@ -447,6 +570,7 @@ export default function AuditDashboardPage() {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
       const mappingUrl = `${podUrls[0]}${PRIVACY_MAPPING_PATH}`;
       let dataset = createSolidDataset();
+      
       privacyMappings.forEach((mapping, idx) => {
         const thing = createThing({ url: `${mappingUrl}#mapping-${idx}` });
         setUrl(thing, `${EX}fieldIri`, mapping.fieldIri);
@@ -456,6 +580,7 @@ export default function AuditDashboardPage() {
         setUrl(thing, `${EX}personalDataType`, mapping.personalDataType);
         dataset = setThing(dataset, thing);
       });
+      
       await saveSolidDatasetAt(mappingUrl, dataset, { fetch: session.fetch });
       toast({ title: 'Privacy settings saved', description: 'Field sensitivity mappings have been updated', status: 'success' });
     } catch (err) {
@@ -466,6 +591,7 @@ export default function AuditDashboardPage() {
   };
 
   const apps = useMemo(() => Array.from(new Set(logs.map((l) => l.app))), [logs]);
+  
   const filteredLogs = useMemo(() => {
     return logs.filter((log) => {
       if (sensitivity === 'sensitive' && !log.hasSensitiveData) return false;
@@ -492,7 +618,7 @@ export default function AuditDashboardPage() {
 
   const handleAddPolicy = () => {
     setEditingPolicy(null);
-    setNewPolicy({ title: '', description: '', targetField: '', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 1 }] });
+    setNewPolicy({ title: '', description: '', targetField: '', targetIRI: '', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 1 }] });
     onPolicyModalOpen();
   };
 
@@ -517,6 +643,7 @@ export default function AuditDashboardPage() {
       title: newPolicy.title!,
       description: newPolicy.description || '',
       targetField: newPolicy.targetField!,
+      targetIRI: editingPolicy?.targetIRI || newPolicy.targetField,
       active: newPolicy.active ?? true,
       constraints: newPolicy.constraints || [{ type: 'count', operator: 'lteq', value: 1 }],
       createdAt: editingPolicy?.createdAt || new Date(),
@@ -529,15 +656,20 @@ export default function AuditDashboardPage() {
     setPrivacyMappings((prev) => prev.map((m) => (m.fieldIri === fieldIri ? { ...m, isSensitive: newValue } : m)));
   };
 
-  const handleAddField = () => {
+  const handleAddFieldFromDropdown = (fieldIri: string) => {
+    const cleanIri = cleanIRI(fieldIri);
+    const label = FIELD_LABELS[cleanIri] || getFieldLabel(cleanIri);
     const newField: PrivacyMapping = {
-      fieldIri: `https://schema.org/custom-${Date.now()}`,
-      fieldLabel: 'New Custom Field',
-      isSensitive: false,
+      fieldIri: cleanIri,
+      fieldLabel: label,
+      isSensitive: true,
       dataCategory: 'dpv:PersonalData',
       personalDataType: 'dpv:Data',
     };
-    setPrivacyMappings((prev) => [...prev, newField]);
+    setPrivacyMappings((prev) => {
+      if (prev.find((p) => p.fieldIri === cleanIri)) return prev;
+      return [...prev, newField];
+    });
   };
 
   const SchemaVisualization = ({ fields }: { fields: AccessedField[] }) => {
@@ -582,6 +714,7 @@ export default function AuditDashboardPage() {
         </HStack>
       </Flex>
       <Divider mb={6} />
+      
       {/* STATS CARDS */}
       <SimpleGrid columns={{ base: 2, md: 4 }} spacing={4} mb={6}>
         <Card>
@@ -618,6 +751,7 @@ export default function AuditDashboardPage() {
           </CardBody>
         </Card>
       </SimpleGrid>
+      
       {/* FILTER BAR */}
       <Card mb={6}>
         <CardBody>
@@ -648,10 +782,12 @@ export default function AuditDashboardPage() {
           </VStack>
         </CardBody>
       </Card>
+      
       {loading && <Spinner />}
       {!loading && filteredLogs.length === 0 && (
         <Alert status="info"><AlertIcon />No audit logs match the selected filters.</Alert>
       )}
+      
       {/* TABS */}
       <Tabs variant="enclosed">
         <TabList>
@@ -728,6 +864,7 @@ export default function AuditDashboardPage() {
               ))}
             </SimpleGrid>
           </TabPanel>
+          
           {/* TAB 2: SCHEMA OVERVIEW */}
           <TabPanel>
             <Card>
@@ -768,6 +905,7 @@ export default function AuditDashboardPage() {
               </CardBody>
             </Card>
           </TabPanel>
+          
           {/* TAB 3: VIOLATION REPORT */}
           <TabPanel>
             <Card>
@@ -810,16 +948,16 @@ export default function AuditDashboardPage() {
         </TabPanels>
       </Tabs>
 
-      {/* ✅ POLICY SETTINGS MODAL - bg="white" color="black" */}
+      {/* POLICY SETTINGS MODAL */}
       <Modal isOpen={isPolicyModalOpen} onClose={onPolicyModalClose} size="4xl">
         <ModalOverlay />
-        <ModalContent bg="white" color="black"> {/* ✅ ADDED: bg="white" color="black" */}
+        <ModalContent bg="white" color="black">
           <ModalHeader>Policy Management</ModalHeader>
           <ModalCloseButton />
           <ModalBody>
             <Accordion allowToggle defaultIndex={editingPolicy ? 0 : -1}>
               <AccordionItem>
-                <AccordionButton>
+                <AccordionButton style={{ backgroundColor: 'white' }}>
                   <Box flex="1" textAlign="left" fontWeight="bold">
                     {editingPolicy ? '✏️ Edit Policy' : '➕ Add New Policy'}
                   </Box>
@@ -827,44 +965,156 @@ export default function AuditDashboardPage() {
                 </AccordionButton>
                 <AccordionPanel pb={4}>
                   <VStack spacing={4} align="stretch">
-                    <FormControl isRequired><FormLabel>Policy Title</FormLabel><Input value={newPolicy.title || ''} onChange={(e) => setNewPolicy((p) => ({ ...p, title: e.target.value }))} placeholder="e.g., Blood Type Access Limit" /></FormControl>
-                    <FormControl><FormLabel>Description</FormLabel><Input value={newPolicy.description || ''} onChange={(e) => setNewPolicy((p) => ({ ...p, description: e.target.value }))} placeholder="Describe what this policy controls" /></FormControl>
-                    <FormControl isRequired><FormLabel>Target Field</FormLabel><Select value={newPolicy.targetField || ''} onChange={(e) => setNewPolicy((p) => ({ ...p, targetField: e.target.value }))} placeholder="Select a field to protect">{availableFields.map((field) => <option key={field} value={field}>{shortIri(field)}</option>)}</Select><FormHelperText>The data field this policy will monitor</FormHelperText></FormControl>
+                    <FormControl isRequired>
+                      <FormLabel>Policy Title</FormLabel>
+                      <Input value={newPolicy.title || ''} onChange={(e) => setNewPolicy((p) => ({ ...p, title: e.target.value }))} placeholder="e.g., Blood Type Access Limit" />
+                    </FormControl>
+                    <FormControl>
+                      <FormLabel>Description</FormLabel>
+                      <Input value={newPolicy.description || ''} onChange={(e) => setNewPolicy((p) => ({ ...p, description: e.target.value }))} placeholder="Describe what this policy controls" />
+                    </FormControl>
+                    <FormControl isRequired>
+                      <FormLabel>Target Field</FormLabel>
+                      <Select 
+                        value={newPolicy.targetField || ''} 
+                        onChange={(e) => setNewPolicy((p) => ({ ...p, targetField: e.target.value }))} 
+                        placeholder="Select a field to protect"
+                        isDisabled={!!editingPolicy}
+                      >
+                        {Object.entries(FIELD_LABELS).map(([iri, label]) => (
+                          <option key={iri} value={shortIri(cleanIRI(iri))}>{label}</option>
+                        ))}
+                      </Select>
+                      {editingPolicy && <FormHelperText>Target field cannot be changed for existing policies</FormHelperText>}
+                      <FormHelperText>The data field this policy will monitor</FormHelperText>
+                    </FormControl>
                     <Box>
                       <Text fontWeight="bold" mb={2}>Constraints</Text>
                       <VStack spacing={3} align="stretch">
                         {newPolicy.constraints?.map((constraint, idx) => (
                           <HStack key={idx} spacing={3} align="start">
-                            <Select value={constraint.type} onChange={(e) => { const nc = [...(newPolicy.constraints || [])]; nc[idx] = { ...constraint, type: e.target.value as PolicyConstraint['type'] }; setNewPolicy((p) => ({ ...p, constraints: nc })); }} size="sm" width="150px">
+                            <Select 
+                              value={constraint.type} 
+                              onChange={(e) => { 
+                                const nc = [...(newPolicy.constraints || [])]; 
+                                nc[idx] = { ...constraint, type: e.target.value as PolicyConstraint['type'] }; 
+                                setNewPolicy((p) => ({ ...p, constraints: nc })); 
+                              }} 
+                              size="sm" 
+                              width="150px"
+                            >
                               <option value="count">Access Count</option>
                               <option value="timeWindow">Time Window</option>
                               <option value="location">Location</option>
                             </Select>
-                            {constraint.type === 'count' && (<>
-                              <Select value={constraint.operator} onChange={(e) => { const nc = [...(newPolicy.constraints || [])]; nc[idx] = { ...constraint, operator: e.target.value as PolicyConstraint['operator'] }; setNewPolicy((p) => ({ ...p, constraints: nc })); }} size="sm" width="100px">
-                                <option value="lteq">≤</option><option value="gteq">≥</option><option value="eq">=</option>
-                              </Select>
-                              <NumberInput value={constraint.value as number} onChange={(_, val) => { const nc = [...(newPolicy.constraints || [])]; nc[idx] = { ...constraint, value: val }; setNewPolicy((p) => ({ ...p, constraints: nc })); }} size="sm" width="80px"><NumberInputField /><NumberInputStepper><NumberIncrementStepper /><NumberDecrementStepper /></NumberInputStepper></NumberInput>
-                              <Text fontSize="sm" color="gray.600">accesses</Text>
-                            </>)}
-                            {constraint.type === 'timeWindow' && (<>
-                              <NumberInput value={constraint.value as number} onChange={(_, val) => { const nc = [...(newPolicy.constraints || [])]; nc[idx] = { ...constraint, value: val }; setNewPolicy((p) => ({ ...p, constraints: nc })); }} size="sm" width="80px"><NumberInputField /><NumberInputStepper><NumberIncrementStepper /><NumberDecrementStepper /></NumberInputStepper></NumberInput>
-                              <Select value={constraint.unit} onChange={(e) => { const nc = [...(newPolicy.constraints || [])]; nc[idx] = { ...constraint, unit: e.target.value as 'hours' | 'days' }; setNewPolicy((p) => ({ ...p, constraints: nc })); }} size="sm" width="100px">
-                                <option value="hours">hours</option><option value="days">days</option>
-                              </Select>
-                              <Text fontSize="sm" color="gray.600">access window</Text>
-                            </>)}
-                            {constraint.type === 'location' && (<>
-                              <Input value={constraint.value as string} onChange={(e) => { const nc = [...(newPolicy.constraints || [])]; nc[idx] = { ...constraint, value: e.target.value }; setNewPolicy((p) => ({ ...p, constraints: nc })); }} size="sm" placeholder="Country code (e.g., ID, US)" width="120px" />
-                              <Text fontSize="sm" color="gray.600">allowed location</Text>
-                            </>)}
+                            {constraint.type === 'count' && (
+                              <>
+                                <Select 
+                                  value={constraint.operator} 
+                                  onChange={(e) => { 
+                                    const nc = [...(newPolicy.constraints || [])]; 
+                                    nc[idx] = { ...constraint, operator: e.target.value as PolicyConstraint['operator'] }; 
+                                    setNewPolicy((p) => ({ ...p, constraints: nc })); 
+                                  }} 
+                                  size="sm" 
+                                  width="100px"
+                                >
+                                  <option value="lteq">≤</option>
+                                  <option value="gteq">≥</option>
+                                  <option value="eq">=</option>
+                                </Select>
+                                <NumberInput 
+                                  value={constraint.value as number} 
+                                  onChange={(_, val) => { 
+                                    const nc = [...(newPolicy.constraints || [])]; 
+                                    nc[idx] = { ...constraint, value: val }; 
+                                    setNewPolicy((p) => ({ ...p, constraints: nc })); 
+                                  }} 
+                                  size="sm" 
+                                  width="80px"
+                                >
+                                  <NumberInputField />
+                                  <NumberInputStepper>
+                                    <NumberIncrementStepper />
+                                    <NumberDecrementStepper />
+                                  </NumberInputStepper>
+                                </NumberInput>
+                                <Text fontSize="sm" color="gray.600">accesses</Text>
+                              </>
+                            )}
+                            {constraint.type === 'timeWindow' && (
+                              <>
+                                <NumberInput 
+                                  value={constraint.value as number} 
+                                  onChange={(_, val) => { 
+                                    const nc = [...(newPolicy.constraints || [])]; 
+                                    nc[idx] = { ...constraint, value: val }; 
+                                    setNewPolicy((p) => ({ ...p, constraints: nc })); 
+                                  }} 
+                                  size="sm" 
+                                  width="80px"
+                                >
+                                  <NumberInputField />
+                                  <NumberInputStepper>
+                                    <NumberIncrementStepper />
+                                    <NumberDecrementStepper />
+                                  </NumberInputStepper>
+                                </NumberInput>
+                                <Select 
+                                  value={constraint.unit} 
+                                  onChange={(e) => { 
+                                    const nc = [...(newPolicy.constraints || [])]; 
+                                    nc[idx] = { ...constraint, unit: e.target.value as 'hours' | 'days' }; 
+                                    setNewPolicy((p) => ({ ...p, constraints: nc })); 
+                                  }} 
+                                  size="sm" 
+                                  width="100px"
+                                >
+                                  <option value="hours">hours</option>
+                                  <option value="days">days</option>
+                                </Select>
+                                <Text fontSize="sm" color="gray.600">access window</Text>
+                              </>
+                            )}
+                            {constraint.type === 'location' && (
+                              <>
+                                <Input 
+                                  value={constraint.value as string} 
+                                  onChange={(e) => { 
+                                    const nc = [...(newPolicy.constraints || [])]; 
+                                    nc[idx] = { ...constraint, value: e.target.value }; 
+                                    setNewPolicy((p) => ({ ...p, constraints: nc })); 
+                                  }} 
+                                  size="sm" 
+                                  placeholder="Country code (e.g., ID, US)" 
+                                  width="120px" 
+                                />
+                                <Text fontSize="sm" color="gray.600">allowed location</Text>
+                              </>
+                            )}
                           </HStack>
                         ))}
                       </VStack>
-                      <Button size="sm" variant="ghost" leftIcon={<AddIcon />} mt={2} onClick={() => setNewPolicy((p) => ({ ...p, constraints: [...(p.constraints || []), { type: 'count', operator: 'lteq', value: 1 }] }))}>Add Another Constraint</Button>
+                      <Button 
+                        size="sm" 
+                        variant="ghost" 
+                        leftIcon={<AddIcon />} 
+                        mt={2} 
+                        onClick={() => setNewPolicy((p) => ({ ...p, constraints: [...(p.constraints || []), { type: 'count', operator: 'lteq', value: 1 }] }))}
+                      >
+                        Add Another Constraint
+                      </Button>
                     </Box>
-                    <FormControl display="flex" alignItems="center"><FormLabel mb="0">Enable Policy</FormLabel><Switch isChecked={newPolicy.active} onChange={(e) => setNewPolicy((p) => ({ ...p, active: e.target.checked }))} /></FormControl>
-                    <HStack justify="flex-end"><Button variant="ghost" onClick={onPolicyModalClose}>Cancel</Button><Button colorScheme="blue" onClick={handleSavePolicy}>{editingPolicy ? 'Update Policy' : 'Create Policy'}</Button></HStack>
+                    <FormControl display="flex" alignItems="center">
+                      <FormLabel mb="0">Enable Policy</FormLabel>
+                      <Switch isChecked={newPolicy.active} onChange={(e) => setNewPolicy((p) => ({ ...p, active: e.target.checked }))} />
+                    </FormControl>
+                    <HStack justify="flex-end">
+                      <Button variant="ghost" onClick={onPolicyModalClose}>Cancel</Button>
+                      <Button colorScheme="blue" onClick={handleSavePolicy}>
+                        {editingPolicy ? 'Update Policy' : 'Create Policy'}
+                      </Button>
+                    </HStack>
                   </VStack>
                 </AccordionPanel>
               </AccordionItem>
@@ -873,18 +1123,56 @@ export default function AuditDashboardPage() {
               <Text fontWeight="bold" mb={3}>Existing Policies</Text>
               {loadingPolicies ? <Spinner /> : (
                 <Table variant="simple" size="sm">
-                  <Thead><Tr><Th>Policy</Th><Th>Target</Th><Th>Constraints</Th><Th>Status</Th><Th>Actions</Th></Tr></Thead>
+                  <Thead>
+                    <Tr>
+                      <Th>Policy</Th>
+                      <Th>Target</Th>
+                      <Th>Constraints</Th>
+                      <Th>Status</Th>
+                      <Th>Actions</Th>
+                    </Tr>
+                  </Thead>
                   <Tbody>
                     {policies.map((policy) => (
                       <Tr key={policy.id}>
-                        <Td><Text fontWeight="medium">{policy.title}</Text><Text fontSize="xs" color="gray.600">{policy.description}</Text></Td>
-                        <Td><Tag size="sm" colorScheme="purple">{policy.targetField}</Tag></Td>
-                        <Td><VStack align="start" spacing={1}>{policy.constraints.map((c, idx) => <Text key={idx} fontSize="xs">{c.type === 'count' && `Count ${c.operator} ${c.value}`}{c.type === 'timeWindow' && `Window: ${c.value} ${c.unit}`}{c.type === 'location' && `Location: ${c.value}`}</Text>)}</VStack></Td>
-                        <Td><Switch size="sm" isChecked={policy.active} onChange={() => handleTogglePolicyActive(policy)} /></Td>
-                        <Td><HStack spacing={2}>
-                          <Tooltip label="Edit policy"><IconButton size="sm" icon={<EditIcon />} aria-label="Edit" onClick={() => handleEditPolicy(policy)} /></Tooltip>
-                          <Tooltip label="Delete policy"><IconButton size="sm" icon={<DeleteIcon />} aria-label="Delete" colorScheme="red" variant="ghost" onClick={() => toast({ title: 'Delete not implemented', status: 'info' })} /></Tooltip>
-                        </HStack></Td>
+                        <Td>
+                          <Text fontWeight="medium">{policy.title}</Text>
+                          <Text fontSize="xs" color="gray.600">{policy.description}</Text>
+                        </Td>
+                        <Td>
+                          <Tag size="sm" colorScheme="purple">{policy.targetField}</Tag>
+                        </Td>
+                        <Td>
+                          <VStack align="start" spacing={1}>
+                            {policy.constraints.map((c, idx) => (
+                              <Text key={idx} fontSize="xs">
+                                {c.type === 'count' && `Count ${c.operator} ${c.value}`}
+                                {c.type === 'timeWindow' && `Window: ${c.value} ${c.unit}`}
+                                {c.type === 'location' && `Location: ${c.value}`}
+                              </Text>
+                            ))}
+                          </VStack>
+                        </Td>
+                        <Td>
+                          <Switch size="sm" isChecked={policy.active} onChange={() => handleTogglePolicyActive(policy)} />
+                        </Td>
+                        <Td>
+                          <HStack spacing={2}>
+                            <Tooltip label="Edit policy">
+                              <IconButton size="sm" icon={<EditIcon />} aria-label="Edit" onClick={() => handleEditPolicy(policy)} />
+                            </Tooltip>
+                            <Tooltip label="Delete policy">
+                              <IconButton 
+                                size="sm" 
+                                icon={<DeleteIcon />} 
+                                aria-label="Delete" 
+                                colorScheme="red" 
+                                variant="ghost" 
+                                onClick={() => toast({ title: 'Delete not implemented', status: 'info' })} 
+                              />
+                            </Tooltip>
+                          </HStack>
+                        </Td>
                       </Tr>
                     ))}
                   </Tbody>
@@ -892,18 +1180,52 @@ export default function AuditDashboardPage() {
               )}
             </Box>
           </ModalBody>
-          <ModalFooter><Button variant="ghost" onClick={onPolicyModalClose}>Close</Button></ModalFooter>
+          <ModalFooter>
+            <Button variant="ghost" onClick={onPolicyModalClose}>Close</Button>
+          </ModalFooter>
         </ModalContent>
       </Modal>
 
-      {/* ✅ PRIVACY SETTINGS MODAL - bg="white" color="black" */}
+      {/* PRIVACY SETTINGS MODAL */}
       <Modal isOpen={isPrivacyModalOpen} onClose={onPrivacyModalClose} size="2xl">
         <ModalOverlay />
-        <ModalContent bg="white" color="black"> {/* ✅ ADDED: bg="white" color="black" */}
+        <ModalContent bg="white" color="black">
           <ModalHeader>Privacy Data Settings</ModalHeader>
           <ModalCloseButton />
           <ModalBody>
-            <Alert status="info" mb={4}><AlertIcon />Mark which fields contain sensitive personal data. Stored at <Code>{PRIVACY_MAPPING_PATH}</Code>.</Alert>
+            <Alert status="info" mb={4}>
+              <AlertIcon />
+              Mark which fields contain sensitive personal data. Stored at <Code>{PRIVACY_MAPPING_PATH}</Code>.
+            </Alert>
+            
+            {/* ADD FIELD: Dropdown using FIELD_LABELS */}
+            <FormControl mb={4}>
+              <FormLabel>Add Field to Monitor</FormLabel>
+              <HStack spacing={2}>
+                <Select 
+                  placeholder="Select a field" 
+                  onChange={(e) => { 
+                    if (e.target.value) { 
+                      handleAddFieldFromDropdown(e.target.value); 
+                      e.target.value = ''; 
+                    } 
+                  }}
+                >
+                  {Object.entries(FIELD_LABELS).map(([iri, label]) => {
+                    const cleanIri = cleanIRI(iri);
+                    const exists = privacyMappings.some((m) => m.fieldIri === cleanIri);
+                    return (
+                      <option key={iri} value={iri} disabled={exists}>
+                        {label} {exists ? '(already added)' : ''}
+                      </option>
+                    );
+                  })}
+                </Select>
+                <Button colorScheme="blue" isDisabled={!newPolicy.targetField}>Add</Button>
+              </HStack>
+              <FormHelperText>Select from predefined field types</FormHelperText>
+            </FormControl>
+            
             {loadingPrivacy ? <Spinner /> : (
               <VStack spacing={4} align="stretch" maxH="60vh" overflowY="auto">
                 {privacyMappings.map((mapping, idx) => (
@@ -918,7 +1240,11 @@ export default function AuditDashboardPage() {
                         </HStack>
                       </VStack>
                       <FormControl display="flex" alignItems="center" width="auto">
-                        <Switch isChecked={mapping.isSensitive} onChange={(e) => handleToggleSensitivity(mapping.fieldIri, e.target.checked)} colorScheme={mapping.isSensitive ? 'red' : 'green'} />
+                        <Switch 
+                          isChecked={mapping.isSensitive} 
+                          onChange={(e) => handleToggleSensitivity(mapping.fieldIri, e.target.checked)} 
+                          colorScheme={mapping.isSensitive ? 'red' : 'green'} 
+                        />
                         <FormLabel mb="0" ml={3} fontSize="sm">{mapping.isSensitive ? 'Sensitive' : 'Normal'}</FormLabel>
                       </FormControl>
                     </HStack>
@@ -926,9 +1252,13 @@ export default function AuditDashboardPage() {
                 ))}
               </VStack>
             )}
-            <Button size="sm" variant="outline" leftIcon={<AddIcon />} mt={4} onClick={handleAddField}>Add Custom Field</Button>
           </ModalBody>
-          <ModalFooter><HStack><Button variant="ghost" onClick={onPrivacyModalClose}>Cancel</Button><Button colorScheme="green" onClick={savePrivacyMappings}>Save Privacy Settings</Button></HStack></ModalFooter>
+          <ModalFooter>
+            <HStack>
+              <Button variant="ghost" onClick={onPrivacyModalClose}>Cancel</Button>
+              <Button colorScheme="green" onClick={savePrivacyMappings}>Save Privacy Settings</Button>
+            </HStack>
+          </ModalFooter>
         </ModalContent>
       </Modal>
     </Box>
