@@ -175,7 +175,7 @@ function generatePolicyId() {
 }
 
 /* ======================================================
-   ✅ ROBUST BUNDLE MATCHING - Handle trailing spaces
+   ✅ ROBUST BUNDLE MATCHING - Handle trailing spaces in bundle URIs
 ====================================================== */
 function bundlesMatch(bundle1: string | undefined, bundle2: string | undefined): boolean {
   if (!bundle1 || !bundle2) return false;
@@ -285,7 +285,7 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
         if (!fieldTypes.some((t: string) => t.includes('AccessedDataField'))) return;
         
         const belongsToBundle = getUrlAll(fieldThing, `${FORCE}belongsToBundle`)[0];
-        // ✅ FIX: Use bundlesMatch for robust comparison
+        // ✅ FIX: Use bundlesMatch for robust comparison (handles trailing spaces)
         if (!bundlesMatch(belongsToBundle, fieldsBundle)) return;
         
         const rawIri = getUrlAll(fieldThing, `${FORCE}fieldIRI`)[0] ?? '';
@@ -322,7 +322,7 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
       });
     }
     
-    // ✅ Parse violations with ROBUST bundle matching + nested field violations
+    // ✅ Parse violations with ROBUST bundle matching + nested FieldViolation
     const violations: FieldViolation[] = [];
     const violatedPolicies: string[] = [];
     const violationBundle = getUrlAll(thing, `${FORCE}hasViolationBundle`)[0];
