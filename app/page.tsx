@@ -118,7 +118,7 @@ const POLICY_PATH = 'private/audit/access/monitor-policy.ttl';
 const PRIVACY_MAPPING_PATH = 'private/dpv-mapping.ttl';
 
 /* ======================================================
-   FIELD LABEL MAPPING - Overrides "Unknown Field"
+   FIELD LABEL MAPPING
 ====================================================== */
 const FIELD_LABELS: Record<string, string> = {
   'https://schema.org/bloodType': 'Blood Type',
@@ -136,28 +136,20 @@ const FIELD_LABELS: Record<string, string> = {
 ====================================================== */
 function cleanIRI(iri: string): string {
   if (!iri || typeof iri !== 'string') return iri || '';
-  
-  // Remove angle brackets first
   let cleaned = iri.replace(/^<|>$/g, '');
-  
-  // Remove ALL types of whitespace issues (TTL files often have trailing spaces)
   cleaned = cleaned
-    .replace(/\s+$/g, '')      // trailing spaces
-    .replace(/^\s+/g, '')      // leading spaces
-    .replace(/\s+/g, ' ')      // collapse multiple internal spaces
+    .replace(/\s+$/g, '')
+    .replace(/^\s+/g, '')
+    .replace(/\s+/g, ' ')
     .trim();
-  
   return cleaned;
 }
 
 function getFieldLabel(iri: string): string {
   const cleanIri = cleanIRI(iri);
-  // Check hardcoded mapping first to fix "Unknown Field" issue
   if (FIELD_LABELS[cleanIri]) {
     return FIELD_LABELS[cleanIri];
   }
-  
-  // Fallback logic
   return cleanIri.split('#').pop() || 
          cleanIri.split('/').pop() || 
          'Unknown Field';
@@ -165,7 +157,6 @@ function getFieldLabel(iri: string): string {
 
 function shortIri(iri: string) {
   const clean = cleanIRI(iri);
-  // Handle ex: prefix explicitly if not expanded
   if (clean.startsWith('ex:')) {
     return clean.replace('ex:', '');
   }
@@ -192,41 +183,29 @@ function bundlesMatch(bundle1: string | undefined, bundle2: string | undefined):
 }
 
 /* ======================================================
-   ROBUST APP EXTRACTION - Handle "health-records" correctly
+   ROBUST APP EXTRACTION
 ====================================================== */
 function extractAppFromThing(thing: any): string {
-  // 1. Try prov:wasAssociatedWith (The primary source in your TTL)
   const associatedWith = getStringNoLocaleAll(thing, `${PROV}wasAssociatedWith`)[0];
   if (associatedWith) {
     const clean = cleanIRI(associatedWith);
-    
-    // If it's a prefixed name like "ex:health-records", expand or clean it
     if (clean.startsWith('ex:')) {
       return clean.replace('ex:', '');
     }
-    
-    // If it's a full URL like https://example.org/health-records
     const parts = clean.split('/');
     const last = parts[parts.length - 1];
-    
-    // If last part contains hash (rare for apps but possible), take after hash
     const app = last.includes('#') ? last.split('#')[1] : last;
-    
     if (app) return app;
   }
   
-  // 2. Fallback: extract from accessedResource URL
   const resource = getUrlAll(thing, `${FORCE}accessedResource`)[0] ?? '';
   const cleanResource = cleanIRI(resource);
-  
-  // Look for standard patterns like /public/{app-name}/
   const publicIdx = cleanResource.indexOf('/public/');
   if (publicIdx !== -1) {
     const afterPublic = cleanResource.substring(publicIdx + 8);
     const app = afterPublic.split('/').filter(Boolean)[0];
     if (app) return app;
   }
-  
   return 'Unknown App';
 }
 
@@ -298,36 +277,29 @@ type PrivacyMapping = {
 };
 
 /* ======================================================
-   PARSE ACCESS LOG ENTRY - Updated for robustness
+   PARSE ACCESS LOG ENTRY
 ====================================================== */
 function parseAccessLogEntry(thing: any): AccessLogEntry | null {
   try {
     const types = getUrlAll(thing, `${RDF}type`);
-    // Check if it is an Activity
     if (!types.some((t: string) => t.includes('Activity'))) return null;
     
     const decision = getStringNoLocaleAll(thing, `${FORCE}decision`)[0];
-    // Skip entries without decision
     if (!decision) return null;
     
     const accessId = thing.url.split('#').pop() ?? thing.url;
     const startedAt = getDatetime(thing, `${PROV}startedAtTime`) ?? null;
-    
-    // App Extraction
     const app = extractAppFromThing(thing);
     
     const accessMethod = getStringNoLocaleAll(thing, `${FORCE}accessMethod`)[0] ?? 'GET';
     const accessedResource = cleanIRI(getUrlAll(thing, `${FORCE}accessedResource`)[0] ?? '');
     
-    // --- PARSE FIELDS ---
     const fields: AccessedField[] = [];
     const fieldsBundle = getUrlAll(thing, `${FORCE}hasFieldsBundle`)[0];
     
     if (fieldsBundle && thing.dataset) {
-      // Iterate over all things in the dataset to find fields belonging to this bundle
       getThingAll(thing.dataset).forEach((fieldThing: any) => {
         const fieldTypes = getUrlAll(fieldThing, `${RDF}type`);
-        // Filter for AccessedDataField types
         if (!fieldTypes.some((t: string) => t.includes('AccessedDataField'))) return;
         
         const belongsToBundle = getUrlAll(fieldThing, `${FORCE}belongsToBundle`)[0];
@@ -338,7 +310,7 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
         
         fields.push({
           fieldIri: cleanIri,
-          fieldName: getFieldLabel(cleanIri), // Uses FIELD_LABELS mapping
+          fieldName: getFieldLabel(cleanIri),
           fieldValue: getStringNoLocaleAll(fieldThing, `${FORCE}fieldValue`)[0] ?? '',
           isSensitive: getBoolean(fieldThing, `${FORCE}isSensitive`) ?? false,
           dataCategory: getUrlAll(fieldThing, `${FORCE}dataCategory`)[0] ?? 'dpv:PersonalData',
@@ -347,7 +319,6 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
       });
     }
     
-    // --- PARSE POLICY EVALUATIONS ---
     const policyEvaluations: PolicyEvaluation[] = [];
     const policyBundle = getUrlAll(thing, `${FORCE}hasPolicyBundle`)[0];
     if (policyBundle && thing.dataset) {
@@ -367,7 +338,6 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
       });
     }
     
-    // --- PARSE VIOLATIONS ---
     const violations: FieldViolation[] = [];
     const violatedPolicies: string[] = [];
     const violationBundle = getUrlAll(thing, `${FORCE}hasViolationBundle`)[0];
@@ -379,12 +349,10 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
         const belongsToBundle = getUrlAll(violThing, `${FORCE}belongsToBundle`)[0];
         if (!bundlesMatch(belongsToBundle, violationBundle)) return;
         
-        // Collect violated policy URIs
         getUrlAll(violThing, `${FORCE}violatedPolicy`).forEach((p: string) => 
           violatedPolicies.push(cleanIRI(p))
         );
         
-        // Parse nested FieldViolations via hasFieldViolation
         getUrlAll(violThing, `${FORCE}hasFieldViolation`).forEach((fvUrl: string) => {
           const fvThing = getThingAll(thing.dataset).find((t: any) => t.url === fvUrl);
           if (fvThing) {
@@ -430,11 +398,9 @@ export default function AuditDashboardPage() {
   const [logs, setLogs] = useState<AccessLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   
-  // Modal States
   const { isOpen: isPolicyModalOpen, onOpen: onPolicyModalOpen, onClose: onPolicyModalClose } = useDisclosure();
   const { isOpen: isPrivacyModalOpen, onOpen: onPrivacyModalOpen, onClose: onPrivacyModalClose } = useDisclosure();
 
-  // Data States
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [loadingPolicies, setLoadingPolicies] = useState(false);
   const [editingPolicy, setEditingPolicy] = useState<Policy | null>(null);
@@ -451,14 +417,12 @@ export default function AuditDashboardPage() {
   const [loadingPrivacy, setLoadingPrivacy] = useState(false);
   const [availableFields, setAvailableFields] = useState<string[]>([]);
 
-  // Filter States
   const [search, setSearch] = useState('');
   const [sensitivity, setSensitivity] = useState<'all' | 'sensitive' | 'normal'>('all');
   const [dateFilter, setDateFilter] = useState<'all' | 'today' | '7' | '30'>('all');
   const [appFilter, setAppFilter] = useState<string>('all');
   const [decisionFilter, setDecisionFilter] = useState<'all' | 'allowed' | 'violation'>('all');
 
-  // Stats
   const stats = useMemo(() => {
     const total = logs.length;
     const violations = logs.filter((l) => l.decision === 'VIOLATION').length;
@@ -467,7 +431,6 @@ export default function AuditDashboardPage() {
     return { total, violations, sensitive, apps: apps.size };
   }, [logs]);
 
-  // Redirect if not logged in
   useEffect(() => {
     if (!isLoggedIn) router.replace('/sign-in');
   }, [isLoggedIn, router]);
@@ -532,7 +495,7 @@ export default function AuditDashboardPage() {
           duration: 5000,
           isClosable: true,
         });
-        setLogs([]); // Ensure empty on error
+        setLogs([]);
       } finally {
         setLoading(false);
       }
@@ -630,7 +593,6 @@ export default function AuditDashboardPage() {
         });
       });
       
-      // Add missing defaults
       Object.entries(FIELD_LABELS).forEach(([iri, label]) => {
         const cleanIri = cleanIRI(iri);
         if (!fields.has(cleanIri)) {
@@ -739,9 +701,6 @@ export default function AuditDashboardPage() {
     }
   };
 
-  /* =========================
-     FILTERS & HELPERS
-  ========================= */
   const apps = useMemo(() => Array.from(new Set(logs.map((l) => l.app))), [logs]);
   
   const filteredLogs = useMemo(() => {
@@ -824,9 +783,6 @@ export default function AuditDashboardPage() {
     });
   };
 
-  /* =========================
-     VISUALIZATION COMPONENTS
-  ========================= */
   const SchemaVisualization = ({ fields }: { fields: AccessedField[] }) => {
     if (fields.length === 0) return <Text fontSize="sm" color="gray.500">No schema data available</Text>;
     return (
@@ -854,9 +810,6 @@ export default function AuditDashboardPage() {
     );
   };
 
-  /* =========================
-     RENDER
-  ========================= */
   return (
     <Box maxW="7xl" mx="auto" py={10} px={4}>
       {/* HEADER */}
@@ -1174,7 +1127,16 @@ export default function AuditDashboardPage() {
               <Text fontWeight="bold" mb={3}>Existing Policies</Text>
               {loadingPolicies ? <Spinner /> : (
                 <Table variant="simple" size="sm">
-                  <Thead><Tr><Th>Policy</Th><Th>Target</Th><th>Constraints</Th><th>Status</Th><th>Actions</Th></Tr></Thead>
+                  {/* ✅ FIX: Ensured all <Th> tags use PascalCase correctly */}
+                  <Thead>
+                    <Tr>
+                      <Th>Policy</Th>
+                      <Th>Target</Th>
+                      <Th>Constraints</Th>
+                      <Th>Status</Th>
+                      <Th>Actions</Th>
+                    </Tr>
+                  </Thead>
                   <Tbody>
                     {policies.map((policy) => (
                       <Tr key={policy.id}>
