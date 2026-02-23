@@ -839,7 +839,7 @@ export default function AuditDashboardPage() {
       {/* POLICY SETTINGS MODAL */}
       <Modal isOpen={isPolicyModalOpen} onClose={onPolicyModalClose} size="4xl">
         <ModalOverlay />
-        <ModalContent>
+        <ModalContent bg="white" color="black">
           <ModalHeader>Policy Management</ModalHeader>
           <ModalCloseButton />
           <ModalBody>
@@ -926,7 +926,7 @@ export default function AuditDashboardPage() {
       {/* PRIVACY SETTINGS MODAL */}
       <Modal isOpen={isPrivacyModalOpen} onClose={onPrivacyModalClose} size="2xl">
         <ModalOverlay />
-        <ModalContent>
+        <ModalContent bg="white" color="black">
           <ModalHeader>Privacy Data Settings</ModalHeader>
           <ModalCloseButton />
           <ModalBody>
