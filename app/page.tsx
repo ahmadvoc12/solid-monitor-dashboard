@@ -1,82 +1,18 @@
 'use client';
 
 import {
-  Box,
-  Text,
-  Spinner,
-  SimpleGrid,
-  useToast,
-  Flex,
-  Divider,
-  Badge,
-  VStack,
-  Tag,
-  Input,
-  Select,
-  HStack,
-  Button,
-  Modal,
-  ModalOverlay,
-  ModalContent,
-  ModalHeader,
-  ModalBody,
-  ModalCloseButton,
-  ModalFooter,
-  Switch,
-  FormControl,
-  FormLabel,
-  FormHelperText,
-  Table,
-  Thead,
-  Tbody,
-  Tr,
-  Th,
-  Td,
-  Checkbox,
-  Accordion,
-  AccordionItem,
-  AccordionButton,
-  AccordionPanel,
-  AccordionIcon,
-  NumberInput,
-  NumberInputField,
-  NumberInputStepper,
-  NumberIncrementStepper,
-  NumberDecrementStepper,
-  useDisclosure,
-  IconButton,
-  Tooltip,
-  Alert,
-  AlertIcon,
-  Card,
-  CardBody,
-  CardHeader,
-  Stat,
-  StatLabel,
-  StatNumber,
-  StatHelpText,
-  Tabs,
-  TabList,
-  TabPanels,
-  Tab,
-  TabPanel,
-  Progress,
-  Icon,
-  Link,
-  Code,
+  Box, Text, Spinner, SimpleGrid, useToast, Flex, Divider, Badge, VStack, Tag, Input, Select,
+  HStack, Button, Modal, ModalOverlay, ModalContent, ModalHeader, ModalBody, ModalCloseButton,
+  ModalFooter, Switch, FormControl, FormLabel, FormHelperText, Table, Thead, Tbody, Tr, Th, Td,
+  Checkbox, Accordion, AccordionItem, AccordionButton, AccordionPanel, AccordionIcon, NumberInput,
+  NumberInputField, NumberInputStepper, NumberIncrementStepper, NumberDecrementStepper, useDisclosure,
+  IconButton, Tooltip, Alert, AlertIcon, Card, CardBody, CardHeader, Stat, StatLabel, StatNumber,
+  StatHelpText, Tabs, TabList, TabPanels, Tab, TabPanel, Icon, Link, Code,
   Tooltip as ChakraTooltip,
 } from '@chakra-ui/react';
 
 import {
-  EditIcon,
-  DeleteIcon,
-  AddIcon,
-  InfoIcon,
-  ViewIcon,
-  WarningIcon,
-  CheckIcon,
-  CloseIcon,
-  ExternalLinkIcon,
+  EditIcon, DeleteIcon, AddIcon, InfoIcon, ViewIcon, WarningIcon, CheckIcon, CloseIcon, ExternalLinkIcon,
 } from '@chakra-ui/icons';
 
 import { useEffect, useMemo, useState } from 'react';
@@ -84,23 +20,9 @@ import { useRouter } from 'next/navigation';
 import { useSolidSession } from '@/contexts/SolidSessionContext';
 
 import {
-  getSolidDataset,
-  getThingAll,
-  getUrlAll,
-  getDatetime,
-  getPodUrlAll,
-  getStringNoLocaleAll,
-  getBoolean,
-  getInteger,
-  createThing,
-  setUrl,
-  setDatetime,
-  setStringNoLocale,
-  buildThing,
-  saveSolidDatasetAt,
-  createSolidDataset,
-  setThing,
-  setBoolean,
+  getSolidDataset, getThingAll, getUrlAll, getDatetime, getPodUrlAll, getStringNoLocaleAll,
+  createThing, setUrl, setDatetime, setStringNoLocale, saveSolidDatasetAt, getBoolean, getInteger,
+  createSolidDataset, setThing, setBoolean, ThingPersisted,
 } from '@inrupt/solid-client';
 
 /* ======================================================
@@ -170,7 +92,6 @@ type PolicyConstraint = {
 
 type Policy = {
   id: string;
-  uuid?: string;
   title: string;
   description: string;
   targetField: string;
@@ -210,14 +131,6 @@ function isWithinDays(date: Date | null, days: number) {
 
 function generatePolicyId() {
   return `policy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function generateUUID() {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-    const r = Math.random() * 16 | 0;
-    const v = c === 'x' ? r : (r & 0x3 | 0x8);
-    return v.toString(16);
-  });
 }
 
 function parseAccessLogEntry(thing: any): AccessLogEntry | null {
@@ -404,11 +317,9 @@ export default function AuditDashboardPage() {
         const target = getUrlAll(thing, `${ODRL}target`)[0] || '';
         const active = getBoolean(thing, `${FORCE}policyActive`) ?? true;
         const createdAt = getDatetime(thing, `${DCT}created`) ?? undefined;
-        const uuid = getStringNoLocaleAll(thing, `${DCT}identifier`)[0]?.replace('urn:uuid:', '');
         const constraints: PolicyConstraint[] = [{ type: 'count', operator: 'lteq', value: 1 }];
         parsed.push({
           id: thing.url,
-          uuid,
           title,
           description,
           targetField: shortIri(target),
@@ -423,7 +334,6 @@ export default function AuditDashboardPage() {
       setPolicies([
         {
           id: 'default-bloodtype',
-          uuid: '2c5c9cc0-c73e-4f78-8905-c08bd427866d',
           title: 'Blood Type Access Limit',
           description: 'Limit bloodType access to 1 per session',
           targetField: 'bloodType',
@@ -432,7 +342,6 @@ export default function AuditDashboardPage() {
         },
         {
           id: 'default-identity',
-          uuid: 'bd7077e5-990b-4c24-87cb-ce3bbc96fd32',
           title: 'Identity Access Limit',
           description: 'Limit identifier access to 3 per session',
           targetField: 'identifier',
@@ -496,6 +405,9 @@ export default function AuditDashboardPage() {
     }
   };
 
+  /* =========================
+     ✅ SAVE POLICY (FIXED: No buildThing)
+  ========================= */
   const savePolicy = async (policy: Policy) => {
     if (!session?.info?.webId) return;
     try {
@@ -507,22 +419,33 @@ export default function AuditDashboardPage() {
       } catch {
         dataset = createSolidDataset();
       }
-      let policyThing;
+
+      // ✅ FIX: Jangan gunakan buildThing - gunakan ThingPersisted langsung
+      let policyThing: ThingPersisted;
+      
       if (policy.id.startsWith('http')) {
-        const existingThing = getThingAll(dataset).find((t: any) => t.url === policy.id);
-        policyThing = existingThing ? buildThing(existingThing) : createThing({ url: policy.id });
+        // ✅ Update existing - cari ThingPersisted yang ada
+        const existingThing = getThingAll(dataset).find((t) => t.url === policy.id);
+        if (existingThing) {
+          // ✅ Gunakan existingThing langsung (sudah ThingPersisted)
+          policyThing = existingThing;
+        } else {
+          // ✅ Buat baru jika tidak ditemukan
+          policyThing = createThing({ url: policy.id });
+        }
       } else {
+        // ✅ Create new policy
         policyThing = createThing({ url: `${podUrls[0]}${POLICY_PATH}#${policy.id}` });
       }
+
+      // ✅ Set properties (setters return new Thing, must reassign)
       policyThing = setUrl(policyThing, `${RDF}type`, `${ODRL}Policy`);
       policyThing = setStringNoLocale(policyThing, `${DCT}title`, policy.title);
       policyThing = setStringNoLocale(policyThing, `${DCT}description`, policy.description || '');
       policyThing = setDatetime(policyThing, `${DCT}created`, policy.createdAt || new Date());
       policyThing = setUrl(policyThing, `${ODRL}target`, policy.targetField);
       policyThing = setBoolean(policyThing, `${FORCE}policyActive`, policy.active);
-      if (policy.uuid && !getStringNoLocaleAll(policyThing, `${DCT}identifier`)[0]) {
-        policyThing = setStringNoLocale(policyThing, `${DCT}identifier`, `urn:uuid:${policy.uuid}`);
-      }
+
       dataset = setThing(dataset, policyThing);
       await saveSolidDatasetAt(policyUrl, dataset, { fetch: session.fetch });
       toast({ title: 'Policy saved', description: `${policy.title} has been updated`, status: 'success' });
@@ -586,7 +509,7 @@ export default function AuditDashboardPage() {
 
   const handleAddPolicy = () => {
     setEditingPolicy(null);
-    setNewPolicy({ title: '', description: '', targetField: '', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 1 }], uuid: generateUUID() });
+    setNewPolicy({ title: '', description: '', targetField: '', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 1 }] });
     onPolicyModalOpen();
   };
 
@@ -608,7 +531,6 @@ export default function AuditDashboardPage() {
     }
     const policyToSave: Policy = {
       id: editingPolicy?.id || generatePolicyId(),
-      uuid: editingPolicy?.uuid || generateUUID(),
       title: newPolicy.title!,
       description: newPolicy.description || '',
       targetField: newPolicy.targetField!,
@@ -664,6 +586,7 @@ export default function AuditDashboardPage() {
 
   return (
     <Box maxW="7xl" mx="auto" py={10} px={4}>
+      {/* HEADER */}
       <Flex justify="space-between" align="center" mb={6} wrap="wrap" gap={3}>
         <VStack align="start" spacing={1}>
           <Text fontSize="2xl" fontWeight="bold">Solid Audit Dashboard</Text>
@@ -676,6 +599,7 @@ export default function AuditDashboardPage() {
         </HStack>
       </Flex>
       <Divider mb={6} />
+      {/* STATS CARDS */}
       <SimpleGrid columns={{ base: 2, md: 4 }} spacing={4} mb={6}>
         <Card>
           <CardBody>
@@ -711,6 +635,7 @@ export default function AuditDashboardPage() {
           </CardBody>
         </Card>
       </SimpleGrid>
+      {/* FILTER BAR */}
       <Card mb={6}>
         <CardBody>
           <VStack spacing={4} align="stretch">
@@ -744,6 +669,7 @@ export default function AuditDashboardPage() {
       {!loading && filteredLogs.length === 0 && (
         <Alert status="info"><AlertIcon />No audit logs match the selected filters.</Alert>
       )}
+      {/* TABS */}
       <Tabs variant="enclosed">
         <TabList>
           <Tab>Access Log</Tab>
@@ -751,6 +677,7 @@ export default function AuditDashboardPage() {
           <Tab>Violation Report</Tab>
         </TabList>
         <TabPanels>
+          {/* TAB 1: ACCESS LOG LIST */}
           <TabPanel>
             <SimpleGrid columns={{ base: 1, md: 2 }} spacing={5}>
               {filteredLogs.map((log) => (
@@ -818,6 +745,7 @@ export default function AuditDashboardPage() {
               ))}
             </SimpleGrid>
           </TabPanel>
+          {/* TAB 2: SCHEMA OVERVIEW */}
           <TabPanel>
             <Card>
               <CardHeader><Text fontWeight="bold">Data Schema Overview</Text></CardHeader>
@@ -857,6 +785,7 @@ export default function AuditDashboardPage() {
               </CardBody>
             </Card>
           </TabPanel>
+          {/* TAB 3: VIOLATION REPORT */}
           <TabPanel>
             <Card>
               <CardHeader><Text fontWeight="bold">Policy Violation Report</Text></CardHeader>
@@ -898,12 +827,13 @@ export default function AuditDashboardPage() {
         </TabPanels>
       </Tabs>
 
+      {/* POLICY SETTINGS MODAL */}
       <Modal isOpen={isPolicyModalOpen} onClose={onPolicyModalClose} size="4xl">
         <ModalOverlay />
-        <ModalContent bg="white">
+        <ModalContent>
           <ModalHeader>Policy Management</ModalHeader>
           <ModalCloseButton />
-          <ModalBody bg="white">
+          <ModalBody>
             <Accordion allowToggle defaultIndex={editingPolicy ? 0 : -1}>
               <AccordionItem>
                 <AccordionButton><Box flex="1" textAlign="left" fontWeight="bold">{editingPolicy ? '✏️ Edit Policy' : '➕ Add New Policy'}</Box><AccordionIcon /></AccordionButton>
@@ -974,16 +904,17 @@ export default function AuditDashboardPage() {
               )}
             </Box>
           </ModalBody>
-          <ModalFooter bg="white"><Button variant="ghost" onClick={onPolicyModalClose}>Close</Button></ModalFooter>
+          <ModalFooter><Button variant="ghost" onClick={onPolicyModalClose}>Close</Button></ModalFooter>
         </ModalContent>
       </Modal>
 
+      {/* PRIVACY SETTINGS MODAL */}
       <Modal isOpen={isPrivacyModalOpen} onClose={onPrivacyModalClose} size="2xl">
         <ModalOverlay />
-        <ModalContent bg="white">
+        <ModalContent>
           <ModalHeader>Privacy Data Settings</ModalHeader>
           <ModalCloseButton />
-          <ModalBody bg="white">
+          <ModalBody>
             <Alert status="info" mb={4}><AlertIcon />Mark which fields contain sensitive personal data. Stored at <Code>{PRIVACY_MAPPING_PATH}</Code>.</Alert>
             {loadingPrivacy ? <Spinner /> : (
               <VStack spacing={4} align="stretch" maxH="60vh" overflowY="auto">
@@ -1009,7 +940,7 @@ export default function AuditDashboardPage() {
             )}
             <Button size="sm" variant="outline" leftIcon={<AddIcon />} mt={4} onClick={handleAddField}>Add Custom Field</Button>
           </ModalBody>
-          <ModalFooter bg="white"><HStack><Button variant="ghost" onClick={onPrivacyModalClose}>Cancel</Button><Button colorScheme="green" onClick={savePrivacyMappings}>Save Privacy Settings</Button></HStack></ModalFooter>
+          <ModalFooter><HStack><Button variant="ghost" onClick={onPrivacyModalClose}>Cancel</Button><Button colorScheme="green" onClick={savePrivacyMappings}>Save Privacy Settings</Button></HStack></ModalFooter>
         </ModalContent>
       </Modal>
     </Box>
