@@ -43,26 +43,6 @@ const POLICY_PATH = 'private/audit/access/monitor-policy.ttl';
 const PRIVACY_MAPPING_PATH = 'private/audit/dpv-mapping.ttl';
 
 /* ======================================================
-   FIELD LABEL MAPPING - FIX "Unknown Field"
-====================================================== */
-const FIELD_LABELS: Record<string, string> = {
-  'https://schema.org/bloodType': 'Blood Type',
-  'https://schema.org/identifier': 'Identifier',
-  'http://purl.org/dc/terms/created': 'Created Timestamp',
-  'https://schema.org/email': 'Email',
-  'https://schema.org/name': 'Name',
-};
-
-function getFieldLabel(iri: string): string {
-  const cleanIri = cleanIRI(iri).replace(/^<|>$/g, '');
-  return FIELD_LABELS[cleanIri] || cleanIri.split('#').pop() || cleanIri.split('/').pop() || 'Unknown Field';
-}
-
-function cleanIRI(iri: string): string {
-  return iri.replace(/\s+>/g, '>').replace(/<\s+/g, '<').trim();
-}
-
-/* ======================================================
    TYPES
 ====================================================== */
 type AccessedField = {
@@ -156,17 +136,14 @@ function generatePolicyId() {
 function parseAccessLogEntry(thing: any): AccessLogEntry | null {
   const types = getUrlAll(thing, `${RDF}type`);
   if (!types.some((t: string) => t.includes('Activity'))) return null;
-  
   const decision = getStringNoLocaleAll(thing, `${FORCE}decision`)[0];
   if (!decision) return null;
-  
   const accessId = thing.url.split('#').pop() ?? thing.url;
   const startedAt = getDatetime(thing, `${PROV}startedAtTime`) ?? null;
   const app = getStringNoLocaleAll(thing, `${PROV}wasAssociatedWith`)[0]?.split('#').pop() ?? 'Unknown';
   const accessMethod = getStringNoLocaleAll(thing, `${FORCE}accessMethod`)[0] ?? 'GET';
   const accessedResource = getUrlAll(thing, `${FORCE}accessedResource`)[0] ?? '';
   
-  // ✅ Parse fields from hasFieldsBundle
   const fields: AccessedField[] = [];
   const fieldsBundle = getUrlAll(thing, `${FORCE}hasFieldsBundle`)[0];
   if (fieldsBundle) {
@@ -175,13 +152,9 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
       if (!fieldTypes.some((t: string) => t.includes('AccessedDataField'))) return;
       const belongsToBundle = getUrlAll(fieldThing, `${FORCE}belongsToBundle`)[0];
       if (belongsToBundle !== fieldsBundle) return;
-      
-      const rawIri = getUrlAll(fieldThing, `${FORCE}fieldIRI`)[0] ?? '';
-      const cleanIri = cleanIRI(rawIri);
-      
       fields.push({
-        fieldIri: cleanIri,
-        fieldName: getFieldLabel(cleanIri), // ✅ FIX: Use getFieldLabel
+        fieldIri: getUrlAll(fieldThing, `${FORCE}fieldIRI`)[0] ?? '',
+        fieldName: getStringNoLocaleAll(fieldThing, `${FORCE}fieldName`)[0] ?? shortIri(getUrlAll(fieldThing, `${FORCE}fieldIRI`)[0] ?? ''),
         fieldValue: getStringNoLocaleAll(fieldThing, `${FORCE}fieldValue`)[0] ?? '',
         isSensitive: getBoolean(fieldThing, `${FORCE}isSensitive`) ?? false,
         dataCategory: getUrlAll(fieldThing, `${FORCE}dataCategory`)[0] ?? 'dpv:PersonalData',
@@ -190,7 +163,6 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
     });
   }
   
-  // ✅ Parse policy evaluations from hasPolicyBundle
   const policyEvaluations: PolicyEvaluation[] = [];
   const policyBundle = getUrlAll(thing, `${FORCE}hasPolicyBundle`)[0];
   if (policyBundle) {
@@ -203,12 +175,11 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
         evaluatedPolicy: getUrlAll(evalThing, `${FORCE}evaluatedPolicy`)[0] ?? '',
         evaluationResult: (getStringNoLocaleAll(evalThing, `${FORCE}evaluationResult`)[0] as 'ALLOWED' | 'VIOLATION') ?? 'ALLOWED',
         evaluationReason: getStringNoLocaleAll(evalThing, `${FORCE}evaluationReason`)[0] ?? '',
-        targetAsset: cleanIRI(getUrlAll(evalThing, `${FORCE}targetAsset`)[0] ?? ''),
+        targetAsset: getUrlAll(evalThing, `${FORCE}targetAsset`)[0] ?? '',
       });
     });
   }
   
-  // ✅ Parse violations from hasViolationBundle
   const violations: FieldViolation[] = [];
   const violatedPolicies: string[] = [];
   const violationBundle = getUrlAll(thing, `${FORCE}hasViolationBundle`)[0];
@@ -218,15 +189,15 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
       if (!violTypes.some((t: string) => t.includes('PolicyViolation'))) return;
       const belongsToBundle = getUrlAll(violThing, `${FORCE}belongsToBundle`)[0];
       if (belongsToBundle !== violationBundle) return;
-      
-      getUrlAll(violThing, `${FORCE}violatedPolicy`).forEach((p: string) => violatedPolicies.push(cleanIRI(p)));
-      
-      getUrlAll(violThing, `${FORCE}hasFieldViolation`).forEach((fvUrl: string) => {
+      const policies = getUrlAll(violThing, `${FORCE}violatedPolicy`);
+      policies.forEach((p: string) => violatedPolicies.push(p));
+      const fieldViolations = getUrlAll(violThing, `${FORCE}hasFieldViolation`);
+      fieldViolations.forEach((fvUrl: string) => {
         const fvThing = getThingAll(thing.dataset).find((t: any) => t.url === fvUrl);
         if (fvThing) {
           violations.push({
-            violatedField: cleanIRI(getUrlAll(fvThing, `${FORCE}violatedField`)[0] ?? ''),
-            violatedPolicy: cleanIRI(getUrlAll(fvThing, `${FORCE}violatedPolicy`)[0] ?? ''),
+            violatedField: getUrlAll(fvThing, `${FORCE}violatedField`)[0] ?? '',
+            violatedPolicy: getUrlAll(fvThing, `${FORCE}violatedPolicy`)[0] ?? '',
             observedCount: getInteger(fvThing, `${FORCE}observedCount`) ?? 0,
             allowedLimit: getInteger(fvThing, `${FORCE}allowedLimit`) ?? 0,
           });
@@ -341,7 +312,7 @@ export default function AuditDashboardPage() {
         if (!types.some((t: string) => t.includes('Policy'))) return;
         const title = getStringNoLocaleAll(thing, `${DCT}title`)[0] || 'Untitled Policy';
         const description = getStringNoLocaleAll(thing, `${DCT}description`)[0] || '';
-        const target = cleanIRI(getUrlAll(thing, `${ODRL}target`)[0] || '');
+        const target = getUrlAll(thing, `${ODRL}target`)[0] || '';
         const active = getBoolean(thing, `${FORCE}policyActive`) ?? true;
         const createdAt = getDatetime(thing, `${DCT}created`) ?? undefined;
         const constraints: PolicyConstraint[] = [{ type: 'count', operator: 'lteq', value: 1 }];
@@ -396,12 +367,12 @@ export default function AuditDashboardPage() {
       const mappings: PrivacyMapping[] = [];
       const fields = new Set<string>();
       getThingAll(dataset).forEach((thing: any) => {
-        const fieldIri = cleanIRI(getUrlAll(thing, `${EX}fieldIri`)[0]);
+        const fieldIri = getUrlAll(thing, `${EX}fieldIri`)[0];
         if (!fieldIri) return;
         fields.add(fieldIri);
         mappings.push({
           fieldIri,
-          fieldLabel: getFieldLabel(fieldIri),
+          fieldLabel: getStringNoLocaleAll(thing, `${EX}fieldName`)[0] || shortIri(fieldIri),
           isSensitive: getBoolean(thing, `${EX}isSensitive`) ?? false,
           dataCategory: getUrlAll(thing, `${EX}dataCategory`)[0] || 'dpv:PersonalData',
           personalDataType: getUrlAll(thing, `${EX}personalDataType`)[0] || 'dpv:Data',
@@ -432,6 +403,9 @@ export default function AuditDashboardPage() {
     }
   };
 
+  /* =========================
+     ✅ SAVE POLICY (FIXED: No buildThing)
+  ========================= */
   const savePolicy = async (policy: Policy) => {
     if (!session?.info?.webId) return;
     try {
@@ -836,17 +810,16 @@ export default function AuditDashboardPage() {
         </TabPanels>
       </Tabs>
 
-      {/* POLICY SETTINGS MODAL */}
+      {/* ✅ POLICY SETTINGS MODAL - bg="white" color="black" */}
       <Modal isOpen={isPolicyModalOpen} onClose={onPolicyModalClose} size="4xl">
         <ModalOverlay />
-        <ModalContent bg="white" color="black">
+        <ModalContent bg="white" color="black"> {/* ✅ ADDED: bg="white" color="black" */}
           <ModalHeader>Policy Management</ModalHeader>
           <ModalCloseButton />
           <ModalBody>
             <Accordion allowToggle defaultIndex={editingPolicy ? 0 : -1}>
               <AccordionItem>
-                {/* ✅ FIX: Add inline CSS backgroundColor: white */}
-                <AccordionButton style={{ backgroundColor: 'white' }}>
+                <AccordionButton>
                   <Box flex="1" textAlign="left" fontWeight="bold">
                     {editingPolicy ? '✏️ Edit Policy' : '➕ Add New Policy'}
                   </Box>
@@ -923,10 +896,10 @@ export default function AuditDashboardPage() {
         </ModalContent>
       </Modal>
 
-      {/* PRIVACY SETTINGS MODAL */}
+      {/* ✅ PRIVACY SETTINGS MODAL - bg="white" color="black" */}
       <Modal isOpen={isPrivacyModalOpen} onClose={onPrivacyModalClose} size="2xl">
         <ModalOverlay />
-        <ModalContent bg="white" color="black">
+        <ModalContent bg="white" color="black"> {/* ✅ ADDED: bg="white" color="black" */}
           <ModalHeader>Privacy Data Settings</ModalHeader>
           <ModalCloseButton />
           <ModalBody>
