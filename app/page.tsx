@@ -110,10 +110,12 @@ const FORCE = 'https://w3id.org/force/compliance-report#';
 const PROV = 'http://www.w3.org/ns/prov#';
 const RDF = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
 
-// Paths
+/* ======================================================
+   ✅ CORRECTED PATHS (Sesuai request user)
+====================================================== */
 const ACCESS_LOG_PATH = 'private/audit/access/access-log.ttl';
 const POLICY_PATH = 'private/audit/access/monitor-policy.ttl';
-const PRIVACY_MAPPING_PATH = 'private/audit/dpv-mapping.ttl';
+const PRIVACY_MAPPING_PATH = 'private/dpv-mapping.ttl'; // ✅ FIX: Bukan di subfolder audit
 
 /* ======================================================
    FIELD LABEL MAPPING - FIX "Unknown Field"
@@ -478,7 +480,7 @@ export default function AuditDashboardPage() {
         const active = getBoolean(thing, `${FORCE}policyActive`) ?? true;
         const createdAt = getDatetime(thing, `${DCT}created`) ?? undefined;
         
-        // ✅ Parse ODRL constraint: permission -> constraint -> rightOperand
+        // Parse ODRL constraint: permission -> constraint -> rightOperand
         let constraintValue = 1;
         const permissions = getUrlAll(thing, `${ODRL}permission`);
         permissions.forEach((permUrl: string) => {
@@ -521,7 +523,7 @@ export default function AuditDashboardPage() {
   };
 
   /* =========================
-     ✅ LOAD PRIVACY MAPPINGS
+     ✅ LOAD PRIVACY MAPPINGS - With CORRECT PATH: private/dpv-mapping.ttl
   ========================= */
   const loadPrivacyMappings = async () => {
     if (!session?.info?.webId) return;
@@ -572,7 +574,7 @@ export default function AuditDashboardPage() {
   };
 
   /* =========================
-     ✅ SAVE POLICY - Properly serialize ODRL constraints with blank nodes
+     ✅ SAVE POLICY - FIXED: Use 'let' instead of 'const' for reassignable Things
   ========================= */
   const savePolicy = async (policy: Policy) => {
     if (!session?.info?.webId) return;
@@ -582,6 +584,7 @@ export default function AuditDashboardPage() {
       let dataset;
       try { dataset = await getSolidDataset(policyUrl, { fetch: session.fetch }); } catch { dataset = createSolidDataset(); }
       
+      // ✅ FIX: Use 'let' for policyThing because setters return new Thing
       let policyThing: ThingPersisted;
       if (policy.id.startsWith('http')) {
         const existingThing = getThingAll(dataset).find((t) => t.url === policy.id);
@@ -601,14 +604,14 @@ export default function AuditDashboardPage() {
       // ✅ Serialize constraint with proper ODRL blank node structure
       const constraint = policy.constraints[0];
       if (constraint?.type === 'count') {
-        // Create constraint blank node
-        const constraintThing = createThing({ url: `${policyThing.url}#constraint-${Date.now()}` });
+        // ✅ FIX: Use 'let' instead of 'const' for constraintThing (setters return new Thing)
+        let constraintThing = createThing({ url: `${policyThing.url}#constraint-${Date.now()}` });
         constraintThing = setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}count`);
         constraintThing = setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
-        constraintThing = setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value)); // ✅ Use setInteger for proper datatype
+        constraintThing = setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value));
         
-        // Create permission blank node that references constraint
-        const permissionThing = createThing({ url: `${policyThing.url}#permission-${Date.now()}` });
+        // ✅ FIX: Use 'let' instead of 'const' for permissionThing
+        let permissionThing = createThing({ url: `${policyThing.url}#permission-${Date.now()}` });
         permissionThing = setUrl(permissionThing, `${ODRL}assigner`, `${EX}pod-owner`);
         permissionThing = setUrl(permissionThing, `${ODRL}assignee`, `${EX}any-app`);
         permissionThing = setUrl(permissionThing, `${ODRL}action`, `${ODRL}read`);
@@ -635,7 +638,7 @@ export default function AuditDashboardPage() {
   };
 
   /* =========================
-     ✅ SAVE PRIVACY MAPPINGS - With proper reassignment
+     ✅ SAVE PRIVACY MAPPINGS - With CORRECT PATH: private/dpv-mapping.ttl
   ========================= */
   const savePrivacyMappings = async () => {
     if (!session?.info?.webId) return;
@@ -645,8 +648,8 @@ export default function AuditDashboardPage() {
       let dataset = createSolidDataset();
       
       privacyMappings.forEach((mapping, idx) => {
+        // ✅ FIX: Use 'let' for thing because setters return new Thing
         let thing = createThing({ url: `${mappingUrl}#mapping-${idx}` });
-        // ✅ Reassign all setter return values
         thing = setUrl(thing, `${EX}fieldIri`, mapping.fieldIri);
         thing = setStringNoLocale(thing, `${EX}fieldName`, mapping.fieldLabel);
         thing = setBoolean(thing, `${EX}isSensitive`, mapping.isSensitive);
