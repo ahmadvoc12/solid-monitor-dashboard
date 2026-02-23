@@ -111,14 +111,14 @@ const PROV = 'http://www.w3.org/ns/prov#';
 const RDF = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
 
 /* ======================================================
-   ✅ CORRECTED PATHS (Sesuai request user)
+   ✅ CORRECTED PATHS
 ====================================================== */
 const ACCESS_LOG_PATH = 'private/audit/access/access-log.ttl';
 const POLICY_PATH = 'private/audit/access/monitor-policy.ttl';
-const PRIVACY_MAPPING_PATH = 'private/dpv-mapping.ttl'; // ✅ FIX: Bukan di subfolder audit
+const PRIVACY_MAPPING_PATH = 'private/dpv-mapping.ttl';
 
 /* ======================================================
-   FIELD LABEL MAPPING - FIX "Unknown Field"
+   ✅ FIELD LABEL MAPPING - FIX "Unknown Field" display
 ====================================================== */
 const FIELD_LABELS: Record<string, string> = {
   'https://schema.org/bloodType': 'Blood Type',
@@ -132,16 +132,16 @@ const FIELD_LABELS: Record<string, string> = {
 };
 
 /* ======================================================
-   ✅ ROBUST CLEAN IRI - Handle ALL edge cases
+   ✅ ROBUST CLEAN IRI - Handle ALL edge cases with trailing spaces
 ====================================================== */
 function cleanIRI(iri: string): string {
   if (!iri || typeof iri !== 'string') return iri || '';
   return iri
-    .replace(/<\s+/g, '<')
-    .replace(/\s+>/g, '>')
-    .replace(/\s+$/g, '')
-    .replace(/^\s+/g, '')
-    .replace(/\s+/g, ' ')
+    .replace(/<\s+/g, '<')      // < https://... -> <https://...
+    .replace(/\s+>/g, '>')      // https://... > -> https://...>
+    .replace(/\s+$/g, '')       // trailing spaces
+    .replace(/^\s+/g, '')       // leading spaces
+    .replace(/\s+/g, ' ')       // collapse internal multiple spaces
     .trim();
 }
 
@@ -163,6 +163,31 @@ function isWithinDays(date: Date | null, days: number) {
 
 function generatePolicyId() {
   return `policy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/* ======================================================
+   ✅ FIX: Extract app name from prov:wasAssociatedWith (NOT from URL)
+====================================================== */
+function extractAppFromThing(thing: any): string {
+  // ✅ Try to get app from prov:wasAssociatedWith first (most reliable)
+  const associatedWith = getStringNoLocaleAll(thing, `${PROV}wasAssociatedWith`)[0];
+  if (associatedWith) {
+    // Handle both full IRI and prefixed form: ex:health-records or https://...#health-records
+    const clean = cleanIRI(associatedWith);
+    const parts = clean.split('/');
+    const last = parts[parts.length - 1];
+    const app = last.includes('#') ? last.split('#')[1] : last;
+    return app.replace('ex:', '') || 'Unknown';
+  }
+  
+  // ✅ Fallback: extract from accessedResource URL
+  const resource = getUrlAll(thing, `${FORCE}accessedResource`)[0] ?? '';
+  const idx = resource.indexOf('/public/');
+  if (idx !== -1) {
+    const segment = resource.substring(0, idx).split('/').filter(Boolean).pop();
+    return segment || 'Unknown';
+  }
+  return 'Unknown';
 }
 
 /* ======================================================
@@ -195,7 +220,7 @@ type AccessLogEntry = {
   id: string;
   accessId: string;
   startedAt: Date | null;
-  app: string;
+  app: string;  // ✅ Now properly extracted
   decision: 'ALLOWED' | 'VIOLATION';
   accessMethod: string;
   accessedResource: string;
@@ -243,7 +268,7 @@ function extractAppFromResource(resource: string) {
 }
 
 /* ======================================================
-   ✅ PARSE ACCESS LOG ENTRY - With robust IRI cleaning
+   ✅ PARSE ACCESS LOG ENTRY - With robust IRI cleaning & app extraction
 ====================================================== */
 function parseAccessLogEntry(thing: any): AccessLogEntry | null {
   try {
@@ -255,11 +280,14 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
     
     const accessId = thing.url.split('#').pop() ?? thing.url;
     const startedAt = getDatetime(thing, `${PROV}startedAtTime`) ?? null;
-    const app = getStringNoLocaleAll(thing, `${PROV}wasAssociatedWith`)[0]?.split('#').pop() ?? 'Unknown';
+    
+    // ✅ FIX: Extract app from prov:wasAssociatedWith, not from URL
+    const app = extractAppFromThing(thing);
+    
     const accessMethod = getStringNoLocaleAll(thing, `${FORCE}accessMethod`)[0] ?? 'GET';
     const accessedResource = cleanIRI(getUrlAll(thing, `${FORCE}accessedResource`)[0] ?? '');
     
-    // Parse fields from hasFieldsBundle
+    // ✅ Parse fields from hasFieldsBundle with proper filtering
     const fields: AccessedField[] = [];
     const fieldsBundle = getUrlAll(thing, `${FORCE}hasFieldsBundle`)[0];
     if (fieldsBundle && thing.dataset) {
@@ -274,7 +302,7 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
         
         fields.push({
           fieldIri: cleanIri,
-          fieldName: getFieldLabel(cleanIri),
+          fieldName: getFieldLabel(cleanIri),  // ✅ FIX: Use getFieldLabel for proper display
           fieldValue: getStringNoLocaleAll(fieldThing, `${FORCE}fieldValue`)[0] ?? '',
           isSensitive: getBoolean(fieldThing, `${FORCE}isSensitive`) ?? false,
           dataCategory: getUrlAll(fieldThing, `${FORCE}dataCategory`)[0] ?? 'dpv:PersonalData',
@@ -283,7 +311,7 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
       });
     }
     
-    // Parse policy evaluations from hasPolicyBundle
+    // ✅ Parse policy evaluations from hasPolicyBundle
     const policyEvaluations: PolicyEvaluation[] = [];
     const policyBundle = getUrlAll(thing, `${FORCE}hasPolicyBundle`)[0];
     if (policyBundle && thing.dataset) {
@@ -301,7 +329,7 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
       });
     }
     
-    // Parse violations from hasViolationBundle
+    // ✅ Parse violations from hasViolationBundle
     const violations: FieldViolation[] = [];
     const violatedPolicies: string[] = [];
     const violationBundle = getUrlAll(thing, `${FORCE}hasViolationBundle`)[0];
@@ -332,7 +360,7 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
       id: thing.url,
       accessId,
       startedAt,
-      app,
+      app,  // ✅ Now properly extracted
       decision: decision as 'ALLOWED' | 'VIOLATION',
       accessMethod,
       accessedResource,
@@ -523,7 +551,7 @@ export default function AuditDashboardPage() {
   };
 
   /* =========================
-     ✅ LOAD PRIVACY MAPPINGS - With CORRECT PATH: private/dpv-mapping.ttl
+     ✅ LOAD PRIVACY MAPPINGS
   ========================= */
   const loadPrivacyMappings = async () => {
     if (!session?.info?.webId) return;
@@ -574,7 +602,7 @@ export default function AuditDashboardPage() {
   };
 
   /* =========================
-     ✅ SAVE POLICY - FIXED: Use 'let' instead of 'const' for reassignable Things
+     ✅ SAVE POLICY - Properly serialize ODRL constraints
   ========================= */
   const savePolicy = async (policy: Policy) => {
     if (!session?.info?.webId) return;
@@ -584,7 +612,6 @@ export default function AuditDashboardPage() {
       let dataset;
       try { dataset = await getSolidDataset(policyUrl, { fetch: session.fetch }); } catch { dataset = createSolidDataset(); }
       
-      // ✅ FIX: Use 'let' for policyThing because setters return new Thing
       let policyThing: ThingPersisted;
       if (policy.id.startsWith('http')) {
         const existingThing = getThingAll(dataset).find((t) => t.url === policy.id);
@@ -593,7 +620,7 @@ export default function AuditDashboardPage() {
         policyThing = createThing({ url: `${podUrls[0]}${POLICY_PATH}#${policy.id}` });
       }
       
-      // ✅ Set basic properties - REASSIGN all setter return values
+      // Set basic properties - REASSIGN all setter return values
       policyThing = setUrl(policyThing, `${RDF}type`, `${ODRL}Policy`);
       policyThing = setStringNoLocale(policyThing, `${DCT}title`, policy.title);
       policyThing = setStringNoLocale(policyThing, `${DCT}description`, policy.description || '');
@@ -601,26 +628,22 @@ export default function AuditDashboardPage() {
       policyThing = setUrl(policyThing, `${ODRL}target`, policy.targetIRI || policy.targetField);
       policyThing = setBoolean(policyThing, `${FORCE}policyActive`, policy.active);
       
-      // ✅ Serialize constraint with proper ODRL blank node structure
+      // Serialize constraint with proper ODRL blank node structure
       const constraint = policy.constraints[0];
       if (constraint?.type === 'count') {
-        // ✅ FIX: Use 'let' instead of 'const' for constraintThing (setters return new Thing)
         let constraintThing = createThing({ url: `${policyThing.url}#constraint-${Date.now()}` });
         constraintThing = setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}count`);
         constraintThing = setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
         constraintThing = setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value));
         
-        // ✅ FIX: Use 'let' instead of 'const' for permissionThing
         let permissionThing = createThing({ url: `${policyThing.url}#permission-${Date.now()}` });
         permissionThing = setUrl(permissionThing, `${ODRL}assigner`, `${EX}pod-owner`);
         permissionThing = setUrl(permissionThing, `${ODRL}assignee`, `${EX}any-app`);
         permissionThing = setUrl(permissionThing, `${ODRL}action`, `${ODRL}read`);
         permissionThing = setUrl(permissionThing, `${ODRL}constraint`, constraintThing.url);
         
-        // Link permission to policy
         policyThing = setUrl(policyThing, `${ODRL}permission`, permissionThing.url);
         
-        // Add blank nodes to dataset
         dataset = setThing(dataset, constraintThing);
         dataset = setThing(dataset, permissionThing);
       }
@@ -638,7 +661,7 @@ export default function AuditDashboardPage() {
   };
 
   /* =========================
-     ✅ SAVE PRIVACY MAPPINGS - With CORRECT PATH: private/dpv-mapping.ttl
+     ✅ SAVE PRIVACY MAPPINGS
   ========================= */
   const savePrivacyMappings = async () => {
     if (!session?.info?.webId) return;
@@ -648,7 +671,6 @@ export default function AuditDashboardPage() {
       let dataset = createSolidDataset();
       
       privacyMappings.forEach((mapping, idx) => {
-        // ✅ FIX: Use 'let' for thing because setters return new Thing
         let thing = createThing({ url: `${mappingUrl}#mapping-${idx}` });
         thing = setUrl(thing, `${EX}fieldIri`, mapping.fieldIri);
         thing = setStringNoLocale(thing, `${EX}fieldName`, mapping.fieldLabel);
@@ -742,7 +764,6 @@ export default function AuditDashboardPage() {
     setPrivacyMappings((prev) => prev.map((m) => (m.fieldIri === fieldIri ? { ...m, isSensitive: newValue } : m)));
   };
 
-  // ✅ Add field from dropdown using FIELD_LABELS (no freetext)
   const handleAddFieldFromDropdown = (fieldIri: string) => {
     const cleanIri = cleanIRI(fieldIri);
     const label = FIELD_LABELS[cleanIri] || getFieldLabel(cleanIri);
@@ -891,7 +912,7 @@ export default function AuditDashboardPage() {
                   <CardHeader pb={2}>
                     <Flex justify="space-between" align="start">
                       <VStack align="start" spacing={1}>
-                        <Text fontWeight="bold">{log.app}</Text>
+                        <Text fontWeight="bold">{log.app}</Text>  {/* ✅ Now shows "health-records" not "Unknown" */}
                         <Text fontSize="xs" color="gray.600">{log.accessMethod} • {log.startedAt?.toLocaleString()}</Text>
                       </VStack>
                       <HStack>
@@ -913,7 +934,7 @@ export default function AuditDashboardPage() {
                           <Text fontSize="xs" fontWeight="medium" color="gray.600" mb={1}>Fields Accessed</Text>
                           <Flex wrap="wrap" gap={1}>
                             {log.fields.map((f, idx) => (
-                              <Tag key={idx} size="sm" colorScheme={f.isSensitive ? 'red' : 'blue'}>{f.fieldName}</Tag>
+                              <Tag key={idx} size="sm" colorScheme={f.isSensitive ? 'red' : 'blue'}>{f.fieldName}</Tag>  {/* ✅ Now shows "Blood Type" not "Unknown Field" */}
                             ))}
                           </Flex>
                         </Box>
@@ -952,7 +973,7 @@ export default function AuditDashboardPage() {
             </SimpleGrid>
           </TabPanel>
           
-          {/* TAB 2: SCHEMA OVERVIEW */}
+          {/* TAB 2: SCHEMA OVERVIEW - Now properly populated */}
           <TabPanel>
             <Card>
               <CardHeader><Text fontWeight="bold">Data Schema Overview</Text></CardHeader>
@@ -973,7 +994,7 @@ export default function AuditDashboardPage() {
                               <Box key={idx} p={3} borderRadius="md" borderWidth="1px" borderColor="gray.200">
                                 <Flex justify="space-between" align="start">
                                   <VStack align="start" spacing={1}>
-                                    <Text fontWeight="medium">{field.fieldName}</Text>
+                                    <Text fontWeight="medium">{field.fieldName}</Text>  {/* ✅ Proper field label */}
                                     <Text fontSize="xs" color="gray.600">{shortIri(field.fieldIri)}</Text>
                                   </VStack>
                                   <Tag size="sm" colorScheme={field.isSensitive ? 'red' : 'blue'}>{shortIri(field.personalDataType)}</Tag>
@@ -993,7 +1014,7 @@ export default function AuditDashboardPage() {
             </Card>
           </TabPanel>
           
-          {/* TAB 3: VIOLATION REPORT */}
+          {/* TAB 3: VIOLATION REPORT - Now properly populated */}
           <TabPanel>
             <Card>
               <CardHeader><Text fontWeight="bold">Policy Violation Report</Text></CardHeader>
@@ -1015,8 +1036,8 @@ export default function AuditDashboardPage() {
                         log.violations.map((v, idx) => (
                           <Tr key={`${log.accessId}-${idx}`} bg="red.50">
                             <Td>{log.startedAt?.toLocaleString()}</Td>
-                            <Td>{log.app}</Td>
-                            <Td>{shortIri(v.violatedField)}</Td>
+                            <Td>{log.app}</Td>  {/* ✅ Now shows proper app name */}
+                            <Td>{getFieldLabel(v.violatedField)}</Td>  {/* ✅ Now shows "Blood Type" not IRI */}
                             <Td>{shortIri(v.violatedPolicy)}</Td>
                             <Td><Badge colorScheme="red">{v.observedCount}</Badge></Td>
                             <Td>{v.allowedLimit}</Td>
