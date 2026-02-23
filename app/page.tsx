@@ -1,5 +1,4 @@
 'use client';
-
 import {
   Box, Text, Spinner, SimpleGrid, useToast, Flex, Divider, Badge, VStack, Tag, Input, Select,
   HStack, Button, Modal, ModalOverlay, ModalContent, ModalHeader, ModalBody, ModalCloseButton,
@@ -36,11 +35,48 @@ const XSD = 'http://www.w3.org/2001/XMLSchema#';
 const FORCE = 'https://w3id.org/force/compliance-report#';
 const PROV = 'http://www.w3.org/ns/prov#';
 const RDF = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
+const PD = 'https://w3id.org/dpv/pd#'; // ✅ Personal Data types
 
 // Paths
 const ACCESS_LOG_PATH = 'private/audit/access/access-log.ttl';
 const POLICY_PATH = 'private/audit/access/monitor-policy.ttl';
 const PRIVACY_MAPPING_PATH = 'private/audit/dpv-mapping.ttl';
+
+/* ======================================================
+   DPV PERSONAL DATA TYPES - SELECT OPTIONS
+====================================================== */
+const DPV_PERSONAL_DATA_TYPES = [
+  { 
+    iri: 'https://schema.org/bloodType', 
+    label: 'Blood Type', 
+    dpvType: 'dpv:HealthData',
+    description: 'Information about blood type'
+  },
+  { 
+    iri: 'https://schema.org/identifier', 
+    label: 'Identifier', 
+    dpvType: 'dpv:PersonalIdentifier',
+    description: 'Personal identifier information'
+  },
+  { 
+    iri: 'https://schema.org/age', 
+    label: 'Age', 
+    dpvType: 'pd:Age',
+    description: 'Information about age'
+  },
+  { 
+    iri: 'https://schema.org/gender', 
+    label: 'Gender', 
+    dpvType: 'pd:Gender',
+    description: 'Information about gender'
+  },
+  { 
+    iri: 'https://schema.org/hairColor', 
+    label: 'Hair Colour', 
+    dpvType: 'pd:HairColour',
+    description: 'Information about hair colour'
+  },
+];
 
 /* ======================================================
    TYPES
@@ -136,16 +172,13 @@ function generatePolicyId() {
 function parseAccessLogEntry(thing: any): AccessLogEntry | null {
   const types = getUrlAll(thing, `${RDF}type`);
   if (!types.some((t: string) => t.includes('Activity'))) return null;
-  
   const decision = getStringNoLocaleAll(thing, `${FORCE}decision`)[0];
   if (!decision) return null;
-  
   const accessId = thing.url.split('#').pop() ?? thing.url;
   const startedAt = getDatetime(thing, `${PROV}startedAtTime`) ?? null;
   const app = getStringNoLocaleAll(thing, `${PROV}wasAssociatedWith`)[0]?.split('#').pop() ?? 'Unknown';
   const accessMethod = getStringNoLocaleAll(thing, `${FORCE}accessMethod`)[0] ?? 'GET';
   const accessedResource = getUrlAll(thing, `${FORCE}accessedResource`)[0] ?? '';
-  
   const fields: AccessedField[] = [];
   const fieldsBundle = getUrlAll(thing, `${FORCE}hasFieldsBundle`)[0];
   if (fieldsBundle) {
@@ -164,7 +197,6 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
       });
     });
   }
-  
   const policyEvaluations: PolicyEvaluation[] = [];
   const policyBundle = getUrlAll(thing, `${FORCE}hasPolicyBundle`)[0];
   if (policyBundle) {
@@ -181,7 +213,6 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
       });
     });
   }
-  
   const violations: FieldViolation[] = [];
   const violatedPolicies: string[] = [];
   const violationBundle = getUrlAll(thing, `${FORCE}hasViolationBundle`)[0];
@@ -207,7 +238,6 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
       });
     });
   }
-  
   return {
     id: thing.url,
     accessId,
@@ -231,10 +261,8 @@ export default function AuditDashboardPage() {
   const { session, isLoggedIn } = useSolidSession();
   const router = useRouter();
   const toast = useToast();
-
   const [logs, setLogs] = useState<AccessLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  
   const { isOpen: isPolicyModalOpen, onOpen: onPolicyModalOpen, onClose: onPolicyModalClose } = useDisclosure();
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [loadingPolicies, setLoadingPolicies] = useState(false);
@@ -246,18 +274,15 @@ export default function AuditDashboardPage() {
     active: true,
     constraints: [{ type: 'count', operator: 'lteq', value: 1 }],
   });
-
   const { isOpen: isPrivacyModalOpen, onOpen: onPrivacyModalOpen, onClose: onPrivacyModalClose } = useDisclosure();
   const [privacyMappings, setPrivacyMappings] = useState<PrivacyMapping[]>([]);
   const [loadingPrivacy, setLoadingPrivacy] = useState(false);
   const [availableFields, setAvailableFields] = useState<string[]>([]);
-
   const [search, setSearch] = useState('');
   const [sensitivity, setSensitivity] = useState<'all' | 'sensitive' | 'normal'>('all');
   const [dateFilter, setDateFilter] = useState<'all' | 'today' | '7' | '30'>('all');
   const [appFilter, setAppFilter] = useState<string>('all');
   const [decisionFilter, setDecisionFilter] = useState<'all' | 'allowed' | 'violation'>('all');
-
   const stats = useMemo(() => {
     const total = logs.length;
     const violations = logs.filter((l) => l.decision === 'VIOLATION').length;
@@ -332,22 +357,11 @@ export default function AuditDashboardPage() {
     } catch (err) {
       console.error('Failed to load policies:', err);
       setPolicies([
-        {
-          id: 'default-bloodtype',
-          title: 'Blood Type Access Limit',
-          description: 'Limit bloodType access to 1 per session',
-          targetField: 'bloodType',
-          active: true,
-          constraints: [{ type: 'count', operator: 'lteq', value: 1 }],
-        },
-        {
-          id: 'default-identity',
-          title: 'Identity Access Limit',
-          description: 'Limit identifier access to 3 per session',
-          targetField: 'identifier',
-          active: true,
-          constraints: [{ type: 'count', operator: 'lteq', value: 3 }],
-        },
+        { id: 'default-bloodtype', title: 'Blood Type Access Limit', description: 'Limit bloodType access to 1 per session', targetField: 'bloodType', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 1 }] },
+        { id: 'default-identity', title: 'Identity Access Limit', description: 'Limit identifier access to 3 per session', targetField: 'identifier', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 3 }] },
+        { id: 'default-age', title: 'Age Access Limit', description: 'Limit age access to 5 per session', targetField: 'age', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 5 }] },
+        { id: 'default-gender', title: 'Gender Access Limit', description: 'Limit gender access to 5 per session', targetField: 'gender', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 5 }] },
+        { id: 'default-haircolour', title: 'Hair Colour Access Limit', description: 'Limit hairColour access to 5 per session', targetField: 'hairColour', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 5 }] },
       ]);
     } finally {
       setLoadingPolicies(false);
@@ -380,11 +394,14 @@ export default function AuditDashboardPage() {
           personalDataType: getUrlAll(thing, `${EX}personalDataType`)[0] || 'dpv:Data',
         });
       });
-      const commonFields = [
-        { iri: 'https://schema.org/bloodType', label: 'Blood Type', sensitive: true, category: 'dpv:SpecialCategoryPersonalData', type: 'dpv:HealthData' },
-        { iri: 'https://schema.org/identifier', label: 'Identifier', sensitive: true, category: 'dpv:PersonalData', type: 'dpv:PersonalIdentifier' },
-        { iri: 'http://purl.org/dc/terms/created', label: 'Created Timestamp', sensitive: false, category: 'dpv:PersonalData', type: 'dpv:Data' },
-      ];
+      // ✅ Add all 5 DPV personal data types
+      const commonFields = DPV_PERSONAL_DATA_TYPES.map((dpvType) => ({
+        iri: dpvType.iri,
+        label: dpvType.label,
+        sensitive: true,
+        category: dpvType.dpvType,
+        type: dpvType.dpvType,
+      }));
       commonFields.forEach((cf) => {
         if (!fields.has(cf.iri)) {
           mappings.push({
@@ -397,7 +414,7 @@ export default function AuditDashboardPage() {
         }
       });
       setPrivacyMappings(mappings);
-      setAvailableFields(Array.from(fields).concat(commonFields.map((f) => f.iri)));
+      setAvailableFields(DPV_PERSONAL_DATA_TYPES.map((f) => f.iri));
     } catch (err) {
       console.error('Failed to load privacy mappings:', err);
     } finally {
@@ -405,9 +422,6 @@ export default function AuditDashboardPage() {
     }
   };
 
-  /* =========================
-     ✅ SAVE POLICY (FIXED: No buildThing)
-  ========================= */
   const savePolicy = async (policy: Policy) => {
     if (!session?.info?.webId) return;
     try {
@@ -419,33 +433,19 @@ export default function AuditDashboardPage() {
       } catch {
         dataset = createSolidDataset();
       }
-
-      // ✅ FIX: Jangan gunakan buildThing - gunakan ThingPersisted langsung
       let policyThing: ThingPersisted;
-      
       if (policy.id.startsWith('http')) {
-        // ✅ Update existing - cari ThingPersisted yang ada
         const existingThing = getThingAll(dataset).find((t) => t.url === policy.id);
-        if (existingThing) {
-          // ✅ Gunakan existingThing langsung (sudah ThingPersisted)
-          policyThing = existingThing;
-        } else {
-          // ✅ Buat baru jika tidak ditemukan
-          policyThing = createThing({ url: policy.id });
-        }
+        policyThing = existingThing ?? createThing({ url: policy.id });
       } else {
-        // ✅ Create new policy
         policyThing = createThing({ url: `${podUrls[0]}${POLICY_PATH}#${policy.id}` });
       }
-
-      // ✅ Set properties (setters return new Thing, must reassign)
       policyThing = setUrl(policyThing, `${RDF}type`, `${ODRL}Policy`);
       policyThing = setStringNoLocale(policyThing, `${DCT}title`, policy.title);
       policyThing = setStringNoLocale(policyThing, `${DCT}description`, policy.description || '');
       policyThing = setDatetime(policyThing, `${DCT}created`, policy.createdAt || new Date());
       policyThing = setUrl(policyThing, `${ODRL}target`, policy.targetField);
       policyThing = setBoolean(policyThing, `${FORCE}policyActive`, policy.active);
-
       dataset = setThing(dataset, policyThing);
       await saveSolidDatasetAt(policyUrl, dataset, { fetch: session.fetch });
       toast({ title: 'Policy saved', description: `${policy.title} has been updated`, status: 'success' });
@@ -482,7 +482,6 @@ export default function AuditDashboardPage() {
   };
 
   const apps = useMemo(() => Array.from(new Set(logs.map((l) => l.app))), [logs]);
-
   const filteredLogs = useMemo(() => {
     return logs.filter((log) => {
       if (sensitivity === 'sensitive' && !log.hasSensitiveData) return false;
@@ -546,15 +545,21 @@ export default function AuditDashboardPage() {
     setPrivacyMappings((prev) => prev.map((m) => (m.fieldIri === fieldIri ? { ...m, isSensitive: newValue } : m)));
   };
 
-  const handleAddField = () => {
+  const handleAddField = (dpvTypeIri: string) => {
+    const dpvType = DPV_PERSONAL_DATA_TYPES.find((t) => t.iri === dpvTypeIri);
+    if (!dpvType) return;
     const newField: PrivacyMapping = {
-      fieldIri: `https://schema.org/custom-${Date.now()}`,
-      fieldLabel: 'New Custom Field',
-      isSensitive: false,
-      dataCategory: 'dpv:PersonalData',
-      personalDataType: 'dpv:Data',
+      fieldIri: dpvType.iri,
+      fieldLabel: dpvType.label,
+      isSensitive: true,
+      dataCategory: dpvType.dpvType,
+      personalDataType: dpvType.dpvType,
     };
-    setPrivacyMappings((prev) => [...prev, newField]);
+    setPrivacyMappings((prev) => {
+      const exists = prev.find((p) => p.fieldIri === dpvTypeIri);
+      if (exists) return prev;
+      return [...prev, newField];
+    });
   };
 
   const SchemaVisualization = ({ fields }: { fields: AccessedField[] }) => {
@@ -827,7 +832,7 @@ export default function AuditDashboardPage() {
         </TabPanels>
       </Tabs>
 
-      {/* POLICY SETTINGS MODAL */}
+      {/* POLICY SETTINGS MODAL - 5 Policy Types */}
       <Modal isOpen={isPolicyModalOpen} onClose={onPolicyModalClose} size="4xl">
         <ModalOverlay />
         <ModalContent>
@@ -841,7 +846,18 @@ export default function AuditDashboardPage() {
                   <VStack spacing={4} align="stretch">
                     <FormControl isRequired><FormLabel>Policy Title</FormLabel><Input value={newPolicy.title || ''} onChange={(e) => setNewPolicy((p) => ({ ...p, title: e.target.value }))} placeholder="e.g., Blood Type Access Limit" /></FormControl>
                     <FormControl><FormLabel>Description</FormLabel><Input value={newPolicy.description || ''} onChange={(e) => setNewPolicy((p) => ({ ...p, description: e.target.value }))} placeholder="Describe what this policy controls" /></FormControl>
-                    <FormControl isRequired><FormLabel>Target Field</FormLabel><Select value={newPolicy.targetField || ''} onChange={(e) => setNewPolicy((p) => ({ ...p, targetField: e.target.value }))} placeholder="Select a field to protect">{availableFields.map((field) => <option key={field} value={field}>{shortIri(field)}</option>)}</Select><FormHelperText>The data field this policy will monitor</FormHelperText></FormControl>
+                    <FormControl isRequired>
+                      <FormLabel>Target Field</FormLabel>
+                      <Select value={newPolicy.targetField || ''} onChange={(e) => setNewPolicy((p) => ({ ...p, targetField: e.target.value }))} placeholder="Select a field to protect">
+                        {/* ✅ 5 Policy Options */}
+                        <option value="bloodType">Blood Type</option>
+                        <option value="identifier">Identifier</option>
+                        <option value="age">Age</option>
+                        <option value="gender">Gender</option>
+                        <option value="hairColour">Hair Colour</option>
+                      </Select>
+                      <FormHelperText>The data field this policy will monitor</FormHelperText>
+                    </FormControl>
                     <Box>
                       <Text fontWeight="bold" mb={2}>Constraints</Text>
                       <VStack spacing={3} align="stretch">
@@ -908,14 +924,41 @@ export default function AuditDashboardPage() {
         </ModalContent>
       </Modal>
 
-      {/* PRIVACY SETTINGS MODAL */}
+      {/* PRIVACY SETTINGS MODAL - Select Dropdown */}
       <Modal isOpen={isPrivacyModalOpen} onClose={onPrivacyModalClose} size="2xl">
         <ModalOverlay />
         <ModalContent>
           <ModalHeader>Privacy Data Settings</ModalHeader>
           <ModalCloseButton />
           <ModalBody>
-            <Alert status="info" mb={4}><AlertIcon />Mark which fields contain sensitive personal data. Stored at <Code>{PRIVACY_MAPPING_PATH}</Code>.</Alert>
+            <Alert status="info" mb={4}>
+              <AlertIcon />
+              Mark which fields contain sensitive personal data. Stored at <Code>{PRIVACY_MAPPING_PATH}</Code>.
+            </Alert>
+            
+            {/* ✅ ADD NEW FIELD - SELECT DROPDOWN */}
+            <FormControl mb={4}>
+              <FormLabel>Add Personal Data Type</FormLabel>
+              <HStack spacing={2}>
+                <Select placeholder="Select DPV type" onChange={(e) => {
+                  if (e.target.value) {
+                    handleAddField(e.target.value);
+                    e.target.value = '';
+                  }
+                }}>
+                  {DPV_PERSONAL_DATA_TYPES.map((dpvType) => (
+                    <option key={dpvType.iri} value={dpvType.iri}>
+                      {dpvType.label} - {dpvType.description}
+                    </option>
+                  ))}
+                </Select>
+                <Button colorScheme="blue" onClick={() => {}}>Add</Button>
+              </HStack>
+              <FormHelperText>
+                Select from DPV Personal Data types (Age, Gender, HairColour, etc.)
+              </FormHelperText>
+            </FormControl>
+
             {loadingPrivacy ? <Spinner /> : (
               <VStack spacing={4} align="stretch" maxH="60vh" overflowY="auto">
                 {privacyMappings.map((mapping, idx) => (
@@ -930,7 +973,11 @@ export default function AuditDashboardPage() {
                         </HStack>
                       </VStack>
                       <FormControl display="flex" alignItems="center" width="auto">
-                        <Switch isChecked={mapping.isSensitive} onChange={(e) => handleToggleSensitivity(mapping.fieldIri, e.target.checked)} colorScheme={mapping.isSensitive ? 'red' : 'green'} />
+                        <Switch
+                          isChecked={mapping.isSensitive}
+                          onChange={(e) => handleToggleSensitivity(mapping.fieldIri, e.target.checked)}
+                          colorScheme={mapping.isSensitive ? 'red' : 'green'}
+                        />
                         <FormLabel mb="0" ml={3} fontSize="sm">{mapping.isSensitive ? 'Sensitive' : 'Normal'}</FormLabel>
                       </FormControl>
                     </HStack>
@@ -938,9 +985,13 @@ export default function AuditDashboardPage() {
                 ))}
               </VStack>
             )}
-            <Button size="sm" variant="outline" leftIcon={<AddIcon />} mt={4} onClick={handleAddField}>Add Custom Field</Button>
           </ModalBody>
-          <ModalFooter><HStack><Button variant="ghost" onClick={onPrivacyModalClose}>Cancel</Button><Button colorScheme="green" onClick={savePrivacyMappings}>Save Privacy Settings</Button></HStack></ModalFooter>
+          <ModalFooter>
+            <HStack>
+              <Button variant="ghost" onClick={onPrivacyModalClose}>Cancel</Button>
+              <Button colorScheme="green" onClick={savePrivacyMappings}>Save Privacy Settings</Button>
+            </HStack>
+          </ModalFooter>
         </ModalContent>
       </Modal>
     </Box>
