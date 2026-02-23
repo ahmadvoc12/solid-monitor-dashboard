@@ -130,15 +130,16 @@ const FIELD_LABELS: Record<string, string> = {
 };
 
 /* ======================================================
-   ✅ CLEAN IRI - Remove trailing/leading spaces (CRITICAL)
+   ✅ ROBUST CLEAN IRI - Handle ALL edge cases
 ====================================================== */
 function cleanIRI(iri: string): string {
-  if (!iri) return iri;
+  if (!iri || typeof iri !== 'string') return iri || '';
   return iri
-    .replace(/<\s+/g, '<')      // < https://... -> <https://...
-    .replace(/\s+>/g, '>')      // https://... > -> https://...>
-    .replace(/\s+$/g, '')       // trailing spaces
-    .replace(/^\s+/g, '')       // leading spaces
+    .replace(/<\s+/g, '<')
+    .replace(/\s+>/g, '>')
+    .replace(/\s+$/g, '')
+    .replace(/^\s+/g, '')
+    .replace(/\s+/g, ' ')
     .trim();
 }
 
@@ -163,7 +164,84 @@ function generatePolicyId() {
 }
 
 /* ======================================================
-   ✅ PARSE ACCESS LOG ENTRY - With robust error handling
+   TYPES
+====================================================== */
+type AccessedField = {
+  fieldIri: string;
+  fieldName: string;
+  fieldValue: string;
+  isSensitive: boolean;
+  dataCategory: string;
+  personalDataType: string;
+};
+
+type PolicyEvaluation = {
+  evaluatedPolicy: string;
+  evaluationResult: 'ALLOWED' | 'VIOLATION';
+  evaluationReason: string;
+  targetAsset: string;
+};
+
+type FieldViolation = {
+  violatedField: string;
+  violatedPolicy: string;
+  observedCount: number;
+  allowedLimit: number;
+};
+
+type AccessLogEntry = {
+  id: string;
+  accessId: string;
+  startedAt: Date | null;
+  app: string;
+  decision: 'ALLOWED' | 'VIOLATION';
+  accessMethod: string;
+  accessedResource: string;
+  fields: AccessedField[];
+  policyEvaluations: PolicyEvaluation[];
+  violations: FieldViolation[];
+  hasSensitiveData: boolean;
+  violatedPolicies: string[];
+};
+
+type PolicyConstraint = {
+  type: 'count' | 'timeWindow' | 'location';
+  operator: 'lteq' | 'gteq' | 'eq';
+  value: string | number;
+  unit?: 'hours' | 'days' | 'km';
+};
+
+type Policy = {
+  id: string;
+  title: string;
+  description: string;
+  targetField: string;
+  targetIRI?: string;
+  active: boolean;
+  constraints: PolicyConstraint[];
+  createdAt?: Date;
+};
+
+type PrivacyMapping = {
+  fieldIri: string;
+  fieldLabel: string;
+  isSensitive: boolean;
+  dataCategory: string;
+  personalDataType: string;
+};
+
+/* ======================================================
+   HELPERS
+====================================================== */
+function extractAppFromResource(resource: string) {
+  const idx = resource.indexOf('/public/');
+  if (idx === -1) return resource;
+  const segment = resource.substring(0, idx).split('/').filter(Boolean).pop();
+  return segment || 'Unknown';
+}
+
+/* ======================================================
+   ✅ PARSE ACCESS LOG ENTRY - With robust IRI cleaning
 ====================================================== */
 function parseAccessLogEntry(thing: any): AccessLogEntry | null {
   try {
@@ -182,7 +260,7 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
     // Parse fields from hasFieldsBundle
     const fields: AccessedField[] = [];
     const fieldsBundle = getUrlAll(thing, `${FORCE}hasFieldsBundle`)[0];
-    if (fieldsBundle) {
+    if (fieldsBundle && thing.dataset) {
       getThingAll(thing.dataset).forEach((fieldThing: any) => {
         const fieldTypes = getUrlAll(fieldThing, `${RDF}type`);
         if (!fieldTypes.some((t: string) => t.includes('AccessedDataField'))) return;
@@ -206,7 +284,7 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
     // Parse policy evaluations from hasPolicyBundle
     const policyEvaluations: PolicyEvaluation[] = [];
     const policyBundle = getUrlAll(thing, `${FORCE}hasPolicyBundle`)[0];
-    if (policyBundle) {
+    if (policyBundle && thing.dataset) {
       getThingAll(thing.dataset).forEach((evalThing: any) => {
         const evalTypes = getUrlAll(evalThing, `${RDF}type`);
         if (!evalTypes.some((t: string) => t.includes('PolicyEvaluation'))) return;
@@ -225,7 +303,7 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
     const violations: FieldViolation[] = [];
     const violatedPolicies: string[] = [];
     const violationBundle = getUrlAll(thing, `${FORCE}hasViolationBundle`)[0];
-    if (violationBundle) {
+    if (violationBundle && thing.dataset) {
       getThingAll(thing.dataset).forEach((violThing: any) => {
         const violTypes = getUrlAll(violThing, `${RDF}type`);
         if (!violTypes.some((t: string) => t.includes('PolicyViolation'))) return;
@@ -325,10 +403,9 @@ export default function AuditDashboardPage() {
         const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
         const accessLogUrl = `${podUrls[0]}${ACCESS_LOG_PATH}`;
         
-        // ✅ Try to fetch the dataset with error handling
         const dataset = await getSolidDataset(accessLogUrl, { fetch: session.fetch });
         
-        // ✅ Check if dataset has graphs property (valid SolidDataset)
+        // Validate dataset structure
         if (!dataset || typeof dataset !== 'object' || !('graphs' in dataset)) {
           console.warn('Invalid dataset structure, using empty logs');
           setLogs([]);
@@ -339,8 +416,12 @@ export default function AuditDashboardPage() {
         const parsed: AccessLogEntry[] = [];
         
         getThingAll(dataset).forEach((thing) => {
-          const entry = parseAccessLogEntry(thing);
-          if (entry) parsed.push(entry);
+          try {
+            const entry = parseAccessLogEntry(thing);
+            if (entry) parsed.push(entry);
+          } catch (parseErr) {
+            console.warn('Failed to parse individual entry:', parseErr);
+          }
         });
         
         parsed.sort((a, b) => {
@@ -353,7 +434,6 @@ export default function AuditDashboardPage() {
       } catch (err: any) {
         console.error('Failed to load access log:', err);
         
-        // ✅ More informative error message
         let errorMsg = 'Failed to load audit log';
         if (err?.status === 401 || err?.status === 403) {
           errorMsg = 'Access denied. Ensure ACL allows read access to private/audit/access/access-log.ttl';
@@ -367,7 +447,7 @@ export default function AuditDashboardPage() {
           title: 'Failed to load audit log',
           description: errorMsg,
           status: 'error',
-          duration: 5000,
+          duration: 6000,
           isClosable: true,
         });
       } finally {
@@ -434,9 +514,6 @@ export default function AuditDashboardPage() {
       setPolicies([
         { id: 'default-bloodtype', title: 'Blood Type Access Limit', description: 'Limit bloodType access to 1 per session', targetField: 'bloodType', targetIRI: 'https://schema.org/bloodType', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 1 }] },
         { id: 'default-identity', title: 'Identity Access Limit', description: 'Limit identifier access to 3 per session', targetField: 'identifier', targetIRI: 'https://schema.org/identifier', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 3 }] },
-        { id: 'default-age', title: 'Age Access Limit', description: 'Limit age access to 5 per session', targetField: 'age', targetIRI: 'https://schema.org/age', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 5 }] },
-        { id: 'default-gender', title: 'Gender Access Limit', description: 'Limit gender access to 5 per session', targetField: 'gender', targetIRI: 'https://schema.org/gender', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 5 }] },
-        { id: 'default-haircolour', title: 'Hair Colour Access Limit', description: 'Limit hairColour access to 5 per session', targetField: 'hairColour', targetIRI: 'https://schema.org/hairColor', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 5 }] },
       ]);
     } finally {
       setLoadingPolicies(false);
@@ -513,7 +590,7 @@ export default function AuditDashboardPage() {
         policyThing = createThing({ url: `${podUrls[0]}${POLICY_PATH}#${policy.id}` });
       }
       
-      // Set basic properties
+      // ✅ Set basic properties - REASSIGN all setter return values
       policyThing = setUrl(policyThing, `${RDF}type`, `${ODRL}Policy`);
       policyThing = setStringNoLocale(policyThing, `${DCT}title`, policy.title);
       policyThing = setStringNoLocale(policyThing, `${DCT}description`, policy.description || '');
@@ -528,7 +605,7 @@ export default function AuditDashboardPage() {
         const constraintThing = createThing({ url: `${policyThing.url}#constraint-${Date.now()}` });
         constraintThing = setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}count`);
         constraintThing = setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
-        constraintThing = setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value)); // ✅ FIX: Use setInteger for proper datatype
+        constraintThing = setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value)); // ✅ Use setInteger for proper datatype
         
         // Create permission blank node that references constraint
         const permissionThing = createThing({ url: `${policyThing.url}#permission-${Date.now()}` });
@@ -558,7 +635,7 @@ export default function AuditDashboardPage() {
   };
 
   /* =========================
-     ✅ SAVE PRIVACY MAPPINGS - FIX: Reassign setter return values
+     ✅ SAVE PRIVACY MAPPINGS - With proper reassignment
   ========================= */
   const savePrivacyMappings = async () => {
     if (!session?.info?.webId) return;
@@ -568,15 +645,13 @@ export default function AuditDashboardPage() {
       let dataset = createSolidDataset();
       
       privacyMappings.forEach((mapping, idx) => {
-        // ✅ FIX: Create thing and REASSIGN return values from setters
         let thing = createThing({ url: `${mappingUrl}#mapping-${idx}` });
-        
-        thing = setUrl(thing, `${EX}fieldIri`, mapping.fieldIri);              // ✅ Reassign
-        thing = setStringNoLocale(thing, `${EX}fieldName`, mapping.fieldLabel); // ✅ Reassign
-        thing = setBoolean(thing, `${EX}isSensitive`, mapping.isSensitive);     // ✅ Reassign
-        thing = setUrl(thing, `${EX}dataCategory`, mapping.dataCategory);       // ✅ Reassign
-        thing = setUrl(thing, `${EX}personalDataType`, mapping.personalDataType); // ✅ Reassign
-        
+        // ✅ Reassign all setter return values
+        thing = setUrl(thing, `${EX}fieldIri`, mapping.fieldIri);
+        thing = setStringNoLocale(thing, `${EX}fieldName`, mapping.fieldLabel);
+        thing = setBoolean(thing, `${EX}isSensitive`, mapping.isSensitive);
+        thing = setUrl(thing, `${EX}dataCategory`, mapping.dataCategory);
+        thing = setUrl(thing, `${EX}personalDataType`, mapping.personalDataType);
         dataset = setThing(dataset, thing);
       });
       
@@ -584,8 +659,6 @@ export default function AuditDashboardPage() {
       toast({ title: 'Privacy settings saved', description: 'Field sensitivity mappings have been updated', status: 'success' });
     } catch (err: any) {
       console.error('Failed to save privacy mappings:', err);
-      
-      // ✅ Better error message for 412 Precondition Failed
       if (err?.errorCode === 'H412' || err?.statusCode === 412) {
         toast({
           title: 'Failed to save privacy settings',
@@ -1197,7 +1270,7 @@ export default function AuditDashboardPage() {
         </ModalContent>
       </Modal>
 
-      {/* PRIVACY SETTINGS MODAL - Select dropdown for adding fields */}
+      {/* PRIVACY SETTINGS MODAL */}
       <Modal isOpen={isPrivacyModalOpen} onClose={onPrivacyModalClose} size="2xl">
         <ModalOverlay />
         <ModalContent bg="white" color="black">
