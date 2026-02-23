@@ -94,6 +94,7 @@ import {
   createSolidDataset,
   setThing,
   setBoolean,
+  setInteger,
   ThingPersisted,
 } from '@inrupt/solid-client';
 
@@ -129,21 +130,44 @@ const FIELD_LABELS: Record<string, string> = {
 };
 
 /* ======================================================
-   CLEAN IRI - Remove trailing/leading spaces
+   ✅ CLEAN IRI - Remove trailing/leading spaces (CRITICAL FIX)
 ====================================================== */
 function cleanIRI(iri: string): string {
   if (!iri) return iri;
   return iri
-    .replace(/<\s+/g, '<')
-    .replace(/\s+>/g, '>')
-    .replace(/\s+$/g, '')
-    .replace(/^\s+/g, '')
+    .replace(/<\s+/g, '<')      // < https://... -> <https://...
+    .replace(/\s+>/g, '>')      // https://... > -> https://...>
+    .replace(/\s+$/g, '')       // trailing spaces
+    .replace(/^\s+/g, '')       // leading spaces
     .trim();
 }
 
 function getFieldLabel(iri: string): string {
   const cleanIri = cleanIRI(iri).replace(/^<|>$/g, '');
   return FIELD_LABELS[cleanIri] || cleanIri.split('#').pop() || cleanIri.split('/').pop() || 'Unknown Field';
+}
+
+function shortIri(iri: string) {
+  return iri.split('#').pop() ?? iri.split('/').pop() ?? iri;
+}
+
+function isWithinDays(date: Date | null, days: number) {
+  if (!date) return false;
+  const now = new Date();
+  const diff = now.getTime() - date.getTime();
+  return diff <= days * 24 * 60 * 60 * 1000;
+}
+
+function generatePolicyId() {
+  return `policy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function generateUUID() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
 }
 
 /* ======================================================
@@ -223,23 +247,8 @@ function extractAppFromResource(resource: string) {
   return segment || 'Unknown';
 }
 
-function shortIri(iri: string) {
-  return iri.split('#').pop() ?? iri.split('/').pop() ?? iri;
-}
-
-function isWithinDays(date: Date | null, days: number) {
-  if (!date) return false;
-  const now = new Date();
-  const diff = now.getTime() - date.getTime();
-  return diff <= days * 24 * 60 * 60 * 1000;
-}
-
-function generatePolicyId() {
-  return `policy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
 /* ======================================================
-   PARSE ACCESS LOG ENTRY
+   ✅ PARSE ACCESS LOG ENTRY - With robust IRI cleaning
 ====================================================== */
 function parseAccessLogEntry(thing: any): AccessLogEntry | null {
   const types = getUrlAll(thing, `${RDF}type`);
@@ -252,7 +261,7 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
   const startedAt = getDatetime(thing, `${PROV}startedAtTime`) ?? null;
   const app = getStringNoLocaleAll(thing, `${PROV}wasAssociatedWith`)[0]?.split('#').pop() ?? 'Unknown';
   const accessMethod = getStringNoLocaleAll(thing, `${FORCE}accessMethod`)[0] ?? 'GET';
-  const accessedResource = getUrlAll(thing, `${FORCE}accessedResource`)[0] ?? '';
+  const accessedResource = cleanIRI(getUrlAll(thing, `${FORCE}accessedResource`)[0] ?? '');
   
   // Parse fields from hasFieldsBundle
   const fields: AccessedField[] = [];
@@ -288,7 +297,7 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
       const belongsToBundle = getUrlAll(evalThing, `${FORCE}belongsToBundle`)[0];
       if (belongsToBundle !== policyBundle) return;
       policyEvaluations.push({
-        evaluatedPolicy: getUrlAll(evalThing, `${FORCE}evaluatedPolicy`)[0] ?? '',
+        evaluatedPolicy: cleanIRI(getUrlAll(evalThing, `${FORCE}evaluatedPolicy`)[0] ?? ''),
         evaluationResult: (getStringNoLocaleAll(evalThing, `${FORCE}evaluationResult`)[0] as 'ALLOWED' | 'VIOLATION') ?? 'ALLOWED',
         evaluationReason: getStringNoLocaleAll(evalThing, `${FORCE}evaluationReason`)[0] ?? '',
         targetAsset: cleanIRI(getUrlAll(evalThing, `${FORCE}targetAsset`)[0] ?? ''),
@@ -386,30 +395,49 @@ export default function AuditDashboardPage() {
     if (!isLoggedIn) router.replace('/sign-in');
   }, [isLoggedIn, router]);
 
+  /* =========================
+     ✅ LOAD ACCESS LOG - With robust error handling
+  ========================= */
   useEffect(() => {
     if (!session?.info?.webId) return;
     (async () => {
       try {
         const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
         const accessLogUrl = `${podUrls[0]}${ACCESS_LOG_PATH}`;
+        
+        // ✅ Try to fetch the dataset
         const dataset = await getSolidDataset(accessLogUrl, { fetch: session.fetch });
         const parsed: AccessLogEntry[] = [];
+        
         getThingAll(dataset).forEach((thing) => {
           const entry = parseAccessLogEntry(thing);
           if (entry) parsed.push(entry);
         });
+        
         parsed.sort((a, b) => {
           if (!a.startedAt) return 1;
           if (!b.startedAt) return -1;
           return b.startedAt.getTime() - a.startedAt.getTime();
         });
+        
         setLogs(parsed);
-      } catch (err) {
+      } catch (err: any) {
         console.error('Failed to load access log:', err);
+        
+        // ✅ More informative error message
+        let errorMsg = 'Failed to load audit log';
+        if (err?.status === 401 || err?.status === 403) {
+          errorMsg = 'Access denied. Ensure ACL allows read access to private/audit/access/access-log.ttl';
+        } else if (err?.status === 404) {
+          errorMsg = 'Audit log file not found. It will be created after first access.';
+        }
+        
         toast({
           title: 'Failed to load audit log',
-          description: 'Ensure ACL allows read access to private/audit/access/access-log.ttl',
+          description: errorMsg,
           status: 'error',
+          duration: 5000,
+          isClosable: true,
         });
       } finally {
         setLoading(false);
@@ -417,6 +445,9 @@ export default function AuditDashboardPage() {
     })();
   }, [session, toast]);
 
+  /* =========================
+     ✅ LOAD POLICIES - Parse ODRL constraint properly
+  ========================= */
   const loadPolicies = async () => {
     if (!session?.info?.webId) return;
     setLoadingPolicies(true);
@@ -436,7 +467,7 @@ export default function AuditDashboardPage() {
         const active = getBoolean(thing, `${FORCE}policyActive`) ?? true;
         const createdAt = getDatetime(thing, `${DCT}created`) ?? undefined;
         
-        // Parse constraint from ODRL permission structure
+        // ✅ Parse ODRL constraint: permission -> constraint -> rightOperand
         let constraintValue = 1;
         const permissions = getUrlAll(thing, `${ODRL}permission`);
         permissions.forEach((permUrl: string) => {
@@ -481,6 +512,9 @@ export default function AuditDashboardPage() {
     }
   };
 
+  /* =========================
+     ✅ LOAD PRIVACY MAPPINGS
+  ========================= */
   const loadPrivacyMappings = async () => {
     if (!session?.info?.webId) return;
     setLoadingPrivacy(true);
@@ -506,7 +540,7 @@ export default function AuditDashboardPage() {
         });
       });
       
-      // Add all FIELD_LABELS options
+      // Add all FIELD_LABELS options that aren't already present
       Object.entries(FIELD_LABELS).forEach(([iri, label]) => {
         const cleanIri = cleanIRI(iri);
         if (!fields.has(cleanIri)) {
@@ -529,6 +563,9 @@ export default function AuditDashboardPage() {
     }
   };
 
+  /* =========================
+     ✅ SAVE POLICY - Properly serialize ODRL constraints with blank nodes
+  ========================= */
   const savePolicy = async (policy: Policy) => {
     if (!session?.info?.webId) return;
     try {
@@ -545,12 +582,37 @@ export default function AuditDashboardPage() {
         policyThing = createThing({ url: `${podUrls[0]}${POLICY_PATH}#${policy.id}` });
       }
       
+      // Set basic properties
       policyThing = setUrl(policyThing, `${RDF}type`, `${ODRL}Policy`);
       policyThing = setStringNoLocale(policyThing, `${DCT}title`, policy.title);
       policyThing = setStringNoLocale(policyThing, `${DCT}description`, policy.description || '');
       policyThing = setDatetime(policyThing, `${DCT}created`, policy.createdAt || new Date());
       policyThing = setUrl(policyThing, `${ODRL}target`, policy.targetIRI || policy.targetField);
       policyThing = setBoolean(policyThing, `${FORCE}policyActive`, policy.active);
+      
+      // ✅ Serialize constraint with proper ODRL blank node structure
+      const constraint = policy.constraints[0];
+      if (constraint?.type === 'count') {
+        // Create constraint blank node
+        const constraintThing = createThing({ url: `${policyThing.url}#constraint-${Date.now()}` });
+        setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}count`);
+        setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
+        setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value)); // ✅ FIX: Use setInteger for proper datatype
+        
+        // Create permission blank node that references constraint
+        const permissionThing = createThing({ url: `${policyThing.url}#permission-${Date.now()}` });
+        setUrl(permissionThing, `${ODRL}assigner`, `${EX}pod-owner`);
+        setUrl(permissionThing, `${ODRL}assignee`, `${EX}any-app`);
+        setUrl(permissionThing, `${ODRL}action`, `${ODRL}read`);
+        setUrl(permissionThing, `${ODRL}constraint`, constraintThing.url);
+        
+        // Link permission to policy
+        setUrl(policyThing, `${ODRL}permission`, permissionThing.url);
+        
+        // Add blank nodes to dataset
+        dataset = setThing(dataset, constraintThing);
+        dataset = setThing(dataset, permissionThing);
+      }
       
       dataset = setThing(dataset, policyThing);
       await saveSolidDatasetAt(policyUrl, dataset, { fetch: session.fetch });
@@ -564,6 +626,9 @@ export default function AuditDashboardPage() {
     }
   };
 
+  /* =========================
+     ✅ SAVE PRIVACY MAPPINGS
+  ========================= */
   const savePrivacyMappings = async () => {
     if (!session?.info?.webId) return;
     try {
@@ -656,6 +721,7 @@ export default function AuditDashboardPage() {
     setPrivacyMappings((prev) => prev.map((m) => (m.fieldIri === fieldIri ? { ...m, isSensitive: newValue } : m)));
   };
 
+  // ✅ Add field from dropdown using FIELD_LABELS (no freetext)
   const handleAddFieldFromDropdown = (fieldIri: string) => {
     const cleanIri = cleanIRI(fieldIri);
     const label = FIELD_LABELS[cleanIri] || getFieldLabel(cleanIri);
@@ -975,9 +1041,9 @@ export default function AuditDashboardPage() {
                     </FormControl>
                     <FormControl isRequired>
                       <FormLabel>Target Field</FormLabel>
-                      <Select 
-                        value={newPolicy.targetField || ''} 
-                        onChange={(e) => setNewPolicy((p) => ({ ...p, targetField: e.target.value }))} 
+                      <Select
+                        value={newPolicy.targetField || ''}
+                        onChange={(e) => setNewPolicy((p) => ({ ...p, targetField: e.target.value }))}
                         placeholder="Select a field to protect"
                         isDisabled={!!editingPolicy}
                       >
@@ -993,14 +1059,14 @@ export default function AuditDashboardPage() {
                       <VStack spacing={3} align="stretch">
                         {newPolicy.constraints?.map((constraint, idx) => (
                           <HStack key={idx} spacing={3} align="start">
-                            <Select 
-                              value={constraint.type} 
-                              onChange={(e) => { 
-                                const nc = [...(newPolicy.constraints || [])]; 
-                                nc[idx] = { ...constraint, type: e.target.value as PolicyConstraint['type'] }; 
-                                setNewPolicy((p) => ({ ...p, constraints: nc })); 
-                              }} 
-                              size="sm" 
+                            <Select
+                              value={constraint.type}
+                              onChange={(e) => {
+                                const nc = [...(newPolicy.constraints || [])];
+                                nc[idx] = { ...constraint, type: e.target.value as PolicyConstraint['type'] };
+                                setNewPolicy((p) => ({ ...p, constraints: nc }));
+                              }}
+                              size="sm"
                               width="150px"
                             >
                               <option value="count">Access Count</option>
@@ -1009,28 +1075,28 @@ export default function AuditDashboardPage() {
                             </Select>
                             {constraint.type === 'count' && (
                               <>
-                                <Select 
-                                  value={constraint.operator} 
-                                  onChange={(e) => { 
-                                    const nc = [...(newPolicy.constraints || [])]; 
-                                    nc[idx] = { ...constraint, operator: e.target.value as PolicyConstraint['operator'] }; 
-                                    setNewPolicy((p) => ({ ...p, constraints: nc })); 
-                                  }} 
-                                  size="sm" 
+                                <Select
+                                  value={constraint.operator}
+                                  onChange={(e) => {
+                                    const nc = [...(newPolicy.constraints || [])];
+                                    nc[idx] = { ...constraint, operator: e.target.value as PolicyConstraint['operator'] };
+                                    setNewPolicy((p) => ({ ...p, constraints: nc }));
+                                  }}
+                                  size="sm"
                                   width="100px"
                                 >
                                   <option value="lteq">≤</option>
                                   <option value="gteq">≥</option>
                                   <option value="eq">=</option>
                                 </Select>
-                                <NumberInput 
-                                  value={constraint.value as number} 
-                                  onChange={(_, val) => { 
-                                    const nc = [...(newPolicy.constraints || [])]; 
-                                    nc[idx] = { ...constraint, value: val }; 
-                                    setNewPolicy((p) => ({ ...p, constraints: nc })); 
-                                  }} 
-                                  size="sm" 
+                                <NumberInput
+                                  value={constraint.value as number}
+                                  onChange={(_, val) => {
+                                    const nc = [...(newPolicy.constraints || [])];
+                                    nc[idx] = { ...constraint, value: val };
+                                    setNewPolicy((p) => ({ ...p, constraints: nc }));
+                                  }}
+                                  size="sm"
                                   width="80px"
                                 >
                                   <NumberInputField />
@@ -1044,14 +1110,14 @@ export default function AuditDashboardPage() {
                             )}
                             {constraint.type === 'timeWindow' && (
                               <>
-                                <NumberInput 
-                                  value={constraint.value as number} 
-                                  onChange={(_, val) => { 
-                                    const nc = [...(newPolicy.constraints || [])]; 
-                                    nc[idx] = { ...constraint, value: val }; 
-                                    setNewPolicy((p) => ({ ...p, constraints: nc })); 
-                                  }} 
-                                  size="sm" 
+                                <NumberInput
+                                  value={constraint.value as number}
+                                  onChange={(_, val) => {
+                                    const nc = [...(newPolicy.constraints || [])];
+                                    nc[idx] = { ...constraint, value: val };
+                                    setNewPolicy((p) => ({ ...p, constraints: nc }));
+                                  }}
+                                  size="sm"
                                   width="80px"
                                 >
                                   <NumberInputField />
@@ -1060,14 +1126,14 @@ export default function AuditDashboardPage() {
                                     <NumberDecrementStepper />
                                   </NumberInputStepper>
                                 </NumberInput>
-                                <Select 
-                                  value={constraint.unit} 
-                                  onChange={(e) => { 
-                                    const nc = [...(newPolicy.constraints || [])]; 
-                                    nc[idx] = { ...constraint, unit: e.target.value as 'hours' | 'days' }; 
-                                    setNewPolicy((p) => ({ ...p, constraints: nc })); 
-                                  }} 
-                                  size="sm" 
+                                <Select
+                                  value={constraint.unit}
+                                  onChange={(e) => {
+                                    const nc = [...(newPolicy.constraints || [])];
+                                    nc[idx] = { ...constraint, unit: e.target.value as 'hours' | 'days' };
+                                    setNewPolicy((p) => ({ ...p, constraints: nc }));
+                                  }}
+                                  size="sm"
                                   width="100px"
                                 >
                                   <option value="hours">hours</option>
@@ -1078,16 +1144,16 @@ export default function AuditDashboardPage() {
                             )}
                             {constraint.type === 'location' && (
                               <>
-                                <Input 
-                                  value={constraint.value as string} 
-                                  onChange={(e) => { 
-                                    const nc = [...(newPolicy.constraints || [])]; 
-                                    nc[idx] = { ...constraint, value: e.target.value }; 
-                                    setNewPolicy((p) => ({ ...p, constraints: nc })); 
-                                  }} 
-                                  size="sm" 
-                                  placeholder="Country code (e.g., ID, US)" 
-                                  width="120px" 
+                                <Input
+                                  value={constraint.value as string}
+                                  onChange={(e) => {
+                                    const nc = [...(newPolicy.constraints || [])];
+                                    nc[idx] = { ...constraint, value: e.target.value };
+                                    setNewPolicy((p) => ({ ...p, constraints: nc }));
+                                  }}
+                                  size="sm"
+                                  placeholder="Country code (e.g., ID, US)"
+                                  width="120px"
                                 />
                                 <Text fontSize="sm" color="gray.600">allowed location</Text>
                               </>
@@ -1095,11 +1161,11 @@ export default function AuditDashboardPage() {
                           </HStack>
                         ))}
                       </VStack>
-                      <Button 
-                        size="sm" 
-                        variant="ghost" 
-                        leftIcon={<AddIcon />} 
-                        mt={2} 
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        leftIcon={<AddIcon />}
+                        mt={2}
                         onClick={() => setNewPolicy((p) => ({ ...p, constraints: [...(p.constraints || []), { type: 'count', operator: 'lteq', value: 1 }] }))}
                       >
                         Add Another Constraint
@@ -1162,13 +1228,13 @@ export default function AuditDashboardPage() {
                               <IconButton size="sm" icon={<EditIcon />} aria-label="Edit" onClick={() => handleEditPolicy(policy)} />
                             </Tooltip>
                             <Tooltip label="Delete policy">
-                              <IconButton 
-                                size="sm" 
-                                icon={<DeleteIcon />} 
-                                aria-label="Delete" 
-                                colorScheme="red" 
-                                variant="ghost" 
-                                onClick={() => toast({ title: 'Delete not implemented', status: 'info' })} 
+                              <IconButton
+                                size="sm"
+                                icon={<DeleteIcon />}
+                                aria-label="Delete"
+                                colorScheme="red"
+                                variant="ghost"
+                                onClick={() => toast({ title: 'Delete not implemented', status: 'info' })}
                               />
                             </Tooltip>
                           </HStack>
@@ -1186,7 +1252,7 @@ export default function AuditDashboardPage() {
         </ModalContent>
       </Modal>
 
-      {/* PRIVACY SETTINGS MODAL */}
+      {/* PRIVACY SETTINGS MODAL - Select dropdown for adding fields */}
       <Modal isOpen={isPrivacyModalOpen} onClose={onPrivacyModalClose} size="2xl">
         <ModalOverlay />
         <ModalContent bg="white" color="black">
@@ -1198,17 +1264,17 @@ export default function AuditDashboardPage() {
               Mark which fields contain sensitive personal data. Stored at <Code>{PRIVACY_MAPPING_PATH}</Code>.
             </Alert>
             
-            {/* ADD FIELD: Dropdown using FIELD_LABELS */}
+            {/* ✅ ADD FIELD: Select dropdown using FIELD_LABELS */}
             <FormControl mb={4}>
               <FormLabel>Add Field to Monitor</FormLabel>
               <HStack spacing={2}>
-                <Select 
-                  placeholder="Select a field" 
-                  onChange={(e) => { 
-                    if (e.target.value) { 
-                      handleAddFieldFromDropdown(e.target.value); 
-                      e.target.value = ''; 
-                    } 
+                <Select
+                  placeholder="Select a field"
+                  onChange={(e) => {
+                    if (e.target.value) {
+                      handleAddFieldFromDropdown(e.target.value);
+                      e.target.value = '';
+                    }
                   }}
                 >
                   {Object.entries(FIELD_LABELS).map(([iri, label]) => {
@@ -1221,7 +1287,7 @@ export default function AuditDashboardPage() {
                     );
                   })}
                 </Select>
-                <Button colorScheme="blue" isDisabled={!newPolicy.targetField}>Add</Button>
+                <Button colorScheme="blue">Add</Button>
               </HStack>
               <FormHelperText>Select from predefined field types</FormHelperText>
             </FormControl>
@@ -1240,10 +1306,10 @@ export default function AuditDashboardPage() {
                         </HStack>
                       </VStack>
                       <FormControl display="flex" alignItems="center" width="auto">
-                        <Switch 
-                          isChecked={mapping.isSensitive} 
-                          onChange={(e) => handleToggleSensitivity(mapping.fieldIri, e.target.checked)} 
-                          colorScheme={mapping.isSensitive ? 'red' : 'green'} 
+                        <Switch
+                          isChecked={mapping.isSensitive}
+                          onChange={(e) => handleToggleSensitivity(mapping.fieldIri, e.target.checked)}
+                          colorScheme={mapping.isSensitive ? 'red' : 'green'}
                         />
                         <FormLabel mb="0" ml={3} fontSize="sm">{mapping.isSensitive ? 'Sensitive' : 'Normal'}</FormLabel>
                       </FormControl>
