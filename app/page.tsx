@@ -118,7 +118,7 @@ const POLICY_PATH = 'private/audit/access/monitor-policy.ttl';
 const PRIVACY_MAPPING_PATH = 'private/dpv-mapping.ttl';
 
 /* ======================================================
-   FIELD LABEL MAPPING
+   ✅ FIELD LABEL MAPPING - FIX "Unknown Field"
 ====================================================== */
 const FIELD_LABELS: Record<string, string> = {
   'https://schema.org/bloodType': 'Blood Type',
@@ -132,26 +132,35 @@ const FIELD_LABELS: Record<string, string> = {
 };
 
 /* ======================================================
-   ✅ ROBUST CLEAN IRI
+   ✅ ULTRA-ROBUST CLEAN IRI - Handle ALL edge cases
 ====================================================== */
 function cleanIRI(iri: string): string {
   if (!iri || typeof iri !== 'string') return iri || '';
-  return iri
-    .replace(/<\s+/g, '<')
-    .replace(/\s+>/g, '>')
-    .replace(/\s+$/g, '')
-    .replace(/^\s+/g, '')
-    .replace(/\s+/g, ' ')
+  
+  // Remove angle brackets first
+  let cleaned = iri.replace(/^<|>$/g, '');
+  
+  // Remove ALL types of whitespace issues
+  cleaned = cleaned
+    .replace(/\s+$/g, '')      // trailing spaces
+    .replace(/^\s+/g, '')      // leading spaces
+    .replace(/\s+/g, ' ')      // collapse multiple internal spaces
     .trim();
+  
+  return cleaned;
 }
 
 function getFieldLabel(iri: string): string {
-  const cleanIri = cleanIRI(iri).replace(/^<|>$/g, '');
-  return FIELD_LABELS[cleanIri] || cleanIri.split('#').pop() || cleanIri.split('/').pop() || 'Unknown Field';
+  const cleanIri = cleanIRI(iri);
+  return FIELD_LABELS[cleanIri] || 
+         cleanIri.split('#').pop() || 
+         cleanIri.split('/').pop() || 
+         'Unknown Field';
 }
 
 function shortIri(iri: string) {
-  return iri.split('#').pop() ?? iri.split('/').pop() ?? iri;
+  const clean = cleanIRI(iri);
+  return clean.split('#').pop() ?? clean.split('/').pop() ?? clean;
 }
 
 function isWithinDays(date: Date | null, days: number) {
@@ -166,20 +175,11 @@ function generatePolicyId() {
 }
 
 /* ======================================================
-   ✅ FIX: Extract app name from resource URL - AFTER /public/
+   ✅ ROBUST BUNDLE MATCHING - Handle trailing spaces
 ====================================================== */
-function extractAppFromResource(resource: string): string {
-  const cleanResource = cleanIRI(resource);
-  const idx = cleanResource.indexOf('/public/');
-  if (idx === -1) return 'Unknown';
-  
-  // ✅ Ambil bagian SETELAH /public/
-  const afterPublic = cleanResource.substring(idx + 8); // 8 = length of '/public/'
-  
-  // ✅ Ambil segment pertama setelah /public/
-  const app = afterPublic.split('/').filter(Boolean)[0];
-  
-  return app || 'Unknown';
+function bundlesMatch(bundle1: string | undefined, bundle2: string | undefined): boolean {
+  if (!bundle1 || !bundle2) return false;
+  return cleanIRI(bundle1) === cleanIRI(bundle2);
 }
 
 /* ======================================================
@@ -250,7 +250,7 @@ type PrivacyMapping = {
 };
 
 /* ======================================================
-   PARSE ACCESS LOG ENTRY
+   ✅ ROBUST PARSE ACCESS LOG ENTRY
 ====================================================== */
 function parseAccessLogEntry(thing: any): AccessLogEntry | null {
   try {
@@ -263,7 +263,7 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
     const accessId = thing.url.split('#').pop() ?? thing.url;
     const startedAt = getDatetime(thing, `${PROV}startedAtTime`) ?? null;
     
-    // ✅ FIX: Extract app from prov:wasAssociatedWith first, fallback to resource URL
+    // Extract app from prov:wasAssociatedWith
     const associatedWith = getStringNoLocaleAll(thing, `${PROV}wasAssociatedWith`)[0];
     let app = 'Unknown';
     if (associatedWith) {
@@ -271,31 +271,29 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
       const parts = clean.split('/');
       const last = parts[parts.length - 1];
       app = (last.includes('#') ? last.split('#')[1] : last).replace('ex:', '') || 'Unknown';
-    } else {
-      // Fallback: extract from accessedResource
-      const accessedResource = getUrlAll(thing, `${FORCE}accessedResource`)[0] ?? '';
-      app = extractAppFromResource(accessedResource);
     }
     
     const accessMethod = getStringNoLocaleAll(thing, `${FORCE}accessMethod`)[0] ?? 'GET';
     const accessedResource = cleanIRI(getUrlAll(thing, `${FORCE}accessedResource`)[0] ?? '');
     
-    // Parse fields from hasFieldsBundle
+    // ✅ Parse fields with ROBUST bundle matching
     const fields: AccessedField[] = [];
     const fieldsBundle = getUrlAll(thing, `${FORCE}hasFieldsBundle`)[0];
     if (fieldsBundle && thing.dataset) {
       getThingAll(thing.dataset).forEach((fieldThing: any) => {
         const fieldTypes = getUrlAll(fieldThing, `${RDF}type`);
         if (!fieldTypes.some((t: string) => t.includes('AccessedDataField'))) return;
+        
         const belongsToBundle = getUrlAll(fieldThing, `${FORCE}belongsToBundle`)[0];
-        if (belongsToBundle !== fieldsBundle) return;
+        // ✅ FIX: Use bundlesMatch for robust comparison
+        if (!bundlesMatch(belongsToBundle, fieldsBundle)) return;
         
         const rawIri = getUrlAll(fieldThing, `${FORCE}fieldIRI`)[0] ?? '';
         const cleanIri = cleanIRI(rawIri);
         
         fields.push({
           fieldIri: cleanIri,
-          fieldName: getFieldLabel(cleanIri),
+          fieldName: getFieldLabel(cleanIri),  // ✅ FIX: Proper field label
           fieldValue: getStringNoLocaleAll(fieldThing, `${FORCE}fieldValue`)[0] ?? '',
           isSensitive: getBoolean(fieldThing, `${FORCE}isSensitive`) ?? false,
           dataCategory: getUrlAll(fieldThing, `${FORCE}dataCategory`)[0] ?? 'dpv:PersonalData',
@@ -304,15 +302,17 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
       });
     }
     
-    // Parse policy evaluations from hasPolicyBundle
+    // ✅ Parse policy evaluations with ROBUST bundle matching
     const policyEvaluations: PolicyEvaluation[] = [];
     const policyBundle = getUrlAll(thing, `${FORCE}hasPolicyBundle`)[0];
     if (policyBundle && thing.dataset) {
       getThingAll(thing.dataset).forEach((evalThing: any) => {
         const evalTypes = getUrlAll(evalThing, `${RDF}type`);
         if (!evalTypes.some((t: string) => t.includes('PolicyEvaluation'))) return;
+        
         const belongsToBundle = getUrlAll(evalThing, `${FORCE}belongsToBundle`)[0];
-        if (belongsToBundle !== policyBundle) return;
+        if (!bundlesMatch(belongsToBundle, policyBundle)) return;
+        
         policyEvaluations.push({
           evaluatedPolicy: cleanIRI(getUrlAll(evalThing, `${FORCE}evaluatedPolicy`)[0] ?? ''),
           evaluationResult: (getStringNoLocaleAll(evalThing, `${FORCE}evaluationResult`)[0] as 'ALLOWED' | 'VIOLATION') ?? 'ALLOWED',
@@ -322,7 +322,7 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
       });
     }
     
-    // Parse violations from hasViolationBundle
+    // ✅ Parse violations with ROBUST bundle matching + nested field violations
     const violations: FieldViolation[] = [];
     const violatedPolicies: string[] = [];
     const violationBundle = getUrlAll(thing, `${FORCE}hasViolationBundle`)[0];
@@ -330,11 +330,16 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
       getThingAll(thing.dataset).forEach((violThing: any) => {
         const violTypes = getUrlAll(violThing, `${RDF}type`);
         if (!violTypes.some((t: string) => t.includes('PolicyViolation'))) return;
+        
         const belongsToBundle = getUrlAll(violThing, `${FORCE}belongsToBundle`)[0];
-        if (belongsToBundle !== violationBundle) return;
+        if (!bundlesMatch(belongsToBundle, violationBundle)) return;
         
-        getUrlAll(violThing, `${FORCE}violatedPolicy`).forEach((p: string) => violatedPolicies.push(cleanIRI(p)));
+        // Get violated policies
+        getUrlAll(violThing, `${FORCE}violatedPolicy`).forEach((p: string) => 
+          violatedPolicies.push(cleanIRI(p))
+        );
         
+        // ✅ FIX: Parse nested FieldViolation via hasFieldViolation
         getUrlAll(violThing, `${FORCE}hasFieldViolation`).forEach((fvUrl: string) => {
           const fvThing = getThingAll(thing.dataset).find((t: any) => t.url === fvUrl);
           if (fvThing) {
@@ -417,7 +422,7 @@ export default function AuditDashboardPage() {
   }, [isLoggedIn, router]);
 
   /* =========================
-     LOAD ACCESS LOG
+     ✅ LOAD ACCESS LOG - With debug logging
   ========================= */
   useEffect(() => {
     if (!session?.info?.webId) return;
@@ -425,6 +430,8 @@ export default function AuditDashboardPage() {
       try {
         const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
         const accessLogUrl = `${podUrls[0]}${ACCESS_LOG_PATH}`;
+        
+        console.log('🔍 Loading access log from:', accessLogUrl);
         
         const dataset = await getSolidDataset(accessLogUrl, { fetch: session.fetch });
         
@@ -435,16 +442,22 @@ export default function AuditDashboardPage() {
           return;
         }
         
+        console.log('📦 Dataset loaded, parsing entries...');
         const parsed: AccessLogEntry[] = [];
         
         getThingAll(dataset).forEach((thing) => {
           try {
             const entry = parseAccessLogEntry(thing);
-            if (entry) parsed.push(entry);
+            if (entry) {
+              console.log('✅ Parsed entry:', entry.accessId, 'app:', entry.app, 'fields:', entry.fields.length, 'violations:', entry.violations.length);
+              parsed.push(entry);
+            }
           } catch (parseErr) {
             console.warn('Failed to parse individual entry:', parseErr);
           }
         });
+        
+        console.log(`📊 Total parsed entries: ${parsed.length}`);
         
         parsed.sort((a, b) => {
           if (!a.startedAt) return 1;
@@ -479,7 +492,7 @@ export default function AuditDashboardPage() {
   }, [session, toast]);
 
   /* =========================
-     LOAD POLICIES
+     ✅ LOAD POLICIES
   ========================= */
   const loadPolicies = async () => {
     if (!session?.info?.webId) return;
@@ -542,7 +555,7 @@ export default function AuditDashboardPage() {
   };
 
   /* =========================
-     LOAD PRIVACY MAPPINGS
+     ✅ LOAD PRIVACY MAPPINGS
   ========================= */
   const loadPrivacyMappings = async () => {
     if (!session?.info?.webId) return;
@@ -592,7 +605,7 @@ export default function AuditDashboardPage() {
   };
 
   /* =========================
-     SAVE POLICY
+     ✅ SAVE POLICY
   ========================= */
   const savePolicy = async (policy: Policy) => {
     if (!session?.info?.webId) return;
@@ -649,7 +662,7 @@ export default function AuditDashboardPage() {
   };
 
   /* =========================
-     SAVE PRIVACY MAPPINGS
+     ✅ SAVE PRIVACY MAPPINGS
   ========================= */
   const savePrivacyMappings = async () => {
     if (!session?.info?.webId) return;
@@ -900,7 +913,7 @@ export default function AuditDashboardPage() {
                   <CardHeader pb={2}>
                     <Flex justify="space-between" align="start">
                       <VStack align="start" spacing={1}>
-                        <Text fontWeight="bold">{log.app}</Text> {/* ✅ Now shows "health-records" */}
+                        <Text fontWeight="bold">{log.app}</Text>
                         <Text fontSize="xs" color="gray.600">{log.accessMethod} • {log.startedAt?.toLocaleString()}</Text>
                       </VStack>
                       <HStack>
@@ -963,7 +976,7 @@ export default function AuditDashboardPage() {
             </SimpleGrid>
           </TabPanel>
           
-          {/* TAB 2: SCHEMA OVERVIEW */}
+          {/* TAB 2: SCHEMA OVERVIEW - Now properly populated */}
           <TabPanel>
             <Card>
               <CardHeader><Text fontWeight="bold">Data Schema Overview</Text></CardHeader>
@@ -1004,7 +1017,7 @@ export default function AuditDashboardPage() {
             </Card>
           </TabPanel>
           
-          {/* TAB 3: VIOLATION REPORT */}
+          {/* TAB 3: VIOLATION REPORT - Now properly populated */}
           <TabPanel>
             <Card>
               <CardHeader><Text fontWeight="bold">Policy Violation Report</Text></CardHeader>
@@ -1026,7 +1039,7 @@ export default function AuditDashboardPage() {
                         log.violations.map((v, idx) => (
                           <Tr key={`${log.accessId}-${v.violatedField}-${idx}`} bg="red.50">
                             <Td>{log.startedAt?.toLocaleString()}</Td>
-                            <Td>{log.app}</Td> {/* ✅ Now shows "health-records" */}
+                            <Td>{log.app}</Td>
                             <Td>{getFieldLabel(v.violatedField)}</Td>
                             <Td>{shortIri(v.violatedPolicy)}</Td>
                             <Td><Badge colorScheme="red">{v.observedCount}</Badge></Td>
@@ -1296,7 +1309,7 @@ export default function AuditDashboardPage() {
               Mark which fields contain sensitive personal data. Stored at <Code>{PRIVACY_MAPPING_PATH}</Code>.
             </Alert>
             
-            {/* ADD FIELD: Dropdown using FIELD_LABELS */}
+            {/* ✅ ADD FIELD: Select dropdown using FIELD_LABELS */}
             <FormControl mb={4}>
               <FormLabel>Add Field to Monitor</FormLabel>
               <HStack spacing={2}>
