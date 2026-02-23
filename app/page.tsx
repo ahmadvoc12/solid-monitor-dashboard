@@ -183,6 +183,33 @@ function bundlesMatch(bundle1: string | undefined, bundle2: string | undefined):
 }
 
 /* ======================================================
+   ✅ ROBUST APP EXTRACTION - Handle prefixed names like ex:health-records
+====================================================== */
+function extractAppFromThing(thing: any): string {
+  // Try prov:wasAssociatedWith first (most reliable)
+  const associatedWith = getStringNoLocaleAll(thing, `${PROV}wasAssociatedWith`)[0];
+  if (associatedWith) {
+    const clean = cleanIRI(associatedWith);
+    // Handle both full IRI and prefixed: ex:health-records or https://...#health-records
+    const parts = clean.split('/');
+    const last = parts[parts.length - 1];
+    const app = last.includes('#') ? last.split('#')[1] : last;
+    // Remove prefix like "ex:" if present
+    return app.replace(/^ex:/, '').replace(':', '') || 'Unknown';
+  }
+  
+  // Fallback: extract from accessedResource URL
+  const resource = getUrlAll(thing, `${FORCE}accessedResource`)[0] ?? '';
+  const idx = cleanIRI(resource).indexOf('/public/');
+  if (idx !== -1) {
+    const afterPublic = cleanIRI(resource).substring(idx + 8);
+    const app = afterPublic.split('/').filter(Boolean)[0];
+    return app || 'Unknown';
+  }
+  return 'Unknown';
+}
+
+/* ======================================================
    TYPES
 ====================================================== */
 type AccessedField = {
@@ -263,15 +290,8 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
     const accessId = thing.url.split('#').pop() ?? thing.url;
     const startedAt = getDatetime(thing, `${PROV}startedAtTime`) ?? null;
     
-    // Extract app from prov:wasAssociatedWith
-    const associatedWith = getStringNoLocaleAll(thing, `${PROV}wasAssociatedWith`)[0];
-    let app = 'Unknown';
-    if (associatedWith) {
-      const clean = cleanIRI(associatedWith);
-      const parts = clean.split('/');
-      const last = parts[parts.length - 1];
-      app = (last.includes('#') ? last.split('#')[1] : last).replace('ex:', '') || 'Unknown';
-    }
+    // ✅ FIX: Robust app extraction from prov:wasAssociatedWith
+    const app = extractAppFromThing(thing);
     
     const accessMethod = getStringNoLocaleAll(thing, `${FORCE}accessMethod`)[0] ?? 'GET';
     const accessedResource = cleanIRI(getUrlAll(thing, `${FORCE}accessedResource`)[0] ?? '');
@@ -358,7 +378,7 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
       id: thing.url,
       accessId,
       startedAt,
-      app,
+      app,  // ✅ Now properly extracted as "health-records"
       decision: decision as 'ALLOWED' | 'VIOLATION',
       accessMethod,
       accessedResource,
@@ -913,7 +933,7 @@ export default function AuditDashboardPage() {
                   <CardHeader pb={2}>
                     <Flex justify="space-between" align="start">
                       <VStack align="start" spacing={1}>
-                        <Text fontWeight="bold">{log.app}</Text>
+                        <Text fontWeight="bold">{log.app}</Text> {/* ✅ Now shows "health-records" */}
                         <Text fontSize="xs" color="gray.600">{log.accessMethod} • {log.startedAt?.toLocaleString()}</Text>
                       </VStack>
                       <HStack>
@@ -1039,8 +1059,8 @@ export default function AuditDashboardPage() {
                         log.violations.map((v, idx) => (
                           <Tr key={`${log.accessId}-${v.violatedField}-${idx}`} bg="red.50">
                             <Td>{log.startedAt?.toLocaleString()}</Td>
-                            <Td>{log.app}</Td>
-                            <Td>{getFieldLabel(v.violatedField)}</Td>
+                            <Td>{log.app}</Td> {/* ✅ Now shows "health-records" */}
+                            <Td>{getFieldLabel(v.violatedField)}</Td> {/* ✅ Now shows "Blood Type" */}
                             <Td>{shortIri(v.violatedPolicy)}</Td>
                             <Td><Badge colorScheme="red">{v.observedCount}</Badge></Td>
                             <Td>{v.allowedLimit}</Td>
