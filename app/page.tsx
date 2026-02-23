@@ -166,6 +166,23 @@ function generatePolicyId() {
 }
 
 /* ======================================================
+   ✅ FIX: Extract app name from resource URL - AFTER /public/
+====================================================== */
+function extractAppFromResource(resource: string): string {
+  const cleanResource = cleanIRI(resource);
+  const idx = cleanResource.indexOf('/public/');
+  if (idx === -1) return 'Unknown';
+  
+  // ✅ Ambil bagian SETELAH /public/
+  const afterPublic = cleanResource.substring(idx + 8); // 8 = length of '/public/'
+  
+  // ✅ Ambil segment pertama setelah /public/
+  const app = afterPublic.split('/').filter(Boolean)[0];
+  
+  return app || 'Unknown';
+}
+
+/* ======================================================
    TYPES
 ====================================================== */
 type AccessedField = {
@@ -233,17 +250,7 @@ type PrivacyMapping = {
 };
 
 /* ======================================================
-   HELPERS
-====================================================== */
-function extractAppFromResource(resource: string) {
-  const idx = resource.indexOf('/public/');
-  if (idx === -1) return resource;
-  const segment = resource.substring(0, idx).split('/').filter(Boolean).pop();
-  return segment || 'Unknown';
-}
-
-/* ======================================================
-   ✅ PARSE ACCESS LOG ENTRY
+   PARSE ACCESS LOG ENTRY
 ====================================================== */
 function parseAccessLogEntry(thing: any): AccessLogEntry | null {
   try {
@@ -255,7 +262,21 @@ function parseAccessLogEntry(thing: any): AccessLogEntry | null {
     
     const accessId = thing.url.split('#').pop() ?? thing.url;
     const startedAt = getDatetime(thing, `${PROV}startedAtTime`) ?? null;
-    const app = getStringNoLocaleAll(thing, `${PROV}wasAssociatedWith`)[0]?.split('#').pop() ?? 'Unknown';
+    
+    // ✅ FIX: Extract app from prov:wasAssociatedWith first, fallback to resource URL
+    const associatedWith = getStringNoLocaleAll(thing, `${PROV}wasAssociatedWith`)[0];
+    let app = 'Unknown';
+    if (associatedWith) {
+      const clean = cleanIRI(associatedWith);
+      const parts = clean.split('/');
+      const last = parts[parts.length - 1];
+      app = (last.includes('#') ? last.split('#')[1] : last).replace('ex:', '') || 'Unknown';
+    } else {
+      // Fallback: extract from accessedResource
+      const accessedResource = getUrlAll(thing, `${FORCE}accessedResource`)[0] ?? '';
+      app = extractAppFromResource(accessedResource);
+    }
+    
     const accessMethod = getStringNoLocaleAll(thing, `${FORCE}accessMethod`)[0] ?? 'GET';
     const accessedResource = cleanIRI(getUrlAll(thing, `${FORCE}accessedResource`)[0] ?? '');
     
@@ -396,7 +417,7 @@ export default function AuditDashboardPage() {
   }, [isLoggedIn, router]);
 
   /* =========================
-     ✅ LOAD ACCESS LOG
+     LOAD ACCESS LOG
   ========================= */
   useEffect(() => {
     if (!session?.info?.webId) return;
@@ -458,7 +479,7 @@ export default function AuditDashboardPage() {
   }, [session, toast]);
 
   /* =========================
-     ✅ LOAD POLICIES
+     LOAD POLICIES
   ========================= */
   const loadPolicies = async () => {
     if (!session?.info?.webId) return;
@@ -521,7 +542,7 @@ export default function AuditDashboardPage() {
   };
 
   /* =========================
-     ✅ LOAD PRIVACY MAPPINGS
+     LOAD PRIVACY MAPPINGS
   ========================= */
   const loadPrivacyMappings = async () => {
     if (!session?.info?.webId) return;
@@ -571,7 +592,7 @@ export default function AuditDashboardPage() {
   };
 
   /* =========================
-     ✅ SAVE POLICY
+     SAVE POLICY
   ========================= */
   const savePolicy = async (policy: Policy) => {
     if (!session?.info?.webId) return;
@@ -628,7 +649,7 @@ export default function AuditDashboardPage() {
   };
 
   /* =========================
-     ✅ SAVE PRIVACY MAPPINGS
+     SAVE PRIVACY MAPPINGS
   ========================= */
   const savePrivacyMappings = async () => {
     if (!session?.info?.webId) return;
@@ -879,7 +900,7 @@ export default function AuditDashboardPage() {
                   <CardHeader pb={2}>
                     <Flex justify="space-between" align="start">
                       <VStack align="start" spacing={1}>
-                        <Text fontWeight="bold">{log.app}</Text>
+                        <Text fontWeight="bold">{log.app}</Text> {/* ✅ Now shows "health-records" */}
                         <Text fontSize="xs" color="gray.600">{log.accessMethod} • {log.startedAt?.toLocaleString()}</Text>
                       </VStack>
                       <HStack>
@@ -900,7 +921,6 @@ export default function AuditDashboardPage() {
                         <Box width="100%">
                           <Text fontSize="xs" fontWeight="medium" color="gray.600" mb={1}>Fields Accessed</Text>
                           <Flex wrap="wrap" gap={1}>
-                            {/* ✅ FIX: Use fieldIri as key instead of idx */}
                             {log.fields.map((f) => (
                               <Tag key={f.fieldIri} size="sm" colorScheme={f.isSensitive ? 'red' : 'blue'}>
                                 {f.fieldName}
@@ -927,7 +947,7 @@ export default function AuditDashboardPage() {
                             <Text fontWeight="medium">Violation Details:</Text>
                             {log.violations.map((v, idx) => (
                               <Text key={`${log.accessId}-violation-${idx}`} fontSize="xs">
-                                {shortIri(v.violatedField)}: {v.observedCount} &gt; {v.allowedLimit} (policy: {shortIri(v.violatedPolicy)})
+                                {getFieldLabel(v.violatedField)}: {v.observedCount} &gt; {v.allowedLimit} (policy: {shortIri(v.violatedPolicy)})
                               </Text>
                             ))}
                           </VStack>
@@ -1006,7 +1026,7 @@ export default function AuditDashboardPage() {
                         log.violations.map((v, idx) => (
                           <Tr key={`${log.accessId}-${v.violatedField}-${idx}`} bg="red.50">
                             <Td>{log.startedAt?.toLocaleString()}</Td>
-                            <Td>{log.app}</Td>
+                            <Td>{log.app}</Td> {/* ✅ Now shows "health-records" */}
                             <Td>{getFieldLabel(v.violatedField)}</Td>
                             <Td>{shortIri(v.violatedPolicy)}</Td>
                             <Td><Badge colorScheme="red">{v.observedCount}</Badge></Td>
@@ -1276,7 +1296,7 @@ export default function AuditDashboardPage() {
               Mark which fields contain sensitive personal data. Stored at <Code>{PRIVACY_MAPPING_PATH}</Code>.
             </Alert>
             
-            {/* ✅ ADD FIELD: Select dropdown using FIELD_LABELS */}
+            {/* ADD FIELD: Dropdown using FIELD_LABELS */}
             <FormControl mb={4}>
               <FormLabel>Add Field to Monitor</FormLabel>
               <HStack spacing={2}>
