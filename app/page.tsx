@@ -62,7 +62,7 @@ import {
   Link,
   Code,
   Tooltip as ChakraTooltip,
-  Checkbox, // ADDED IMPORT
+  Checkbox,
 } from '@chakra-ui/react';
 
 import {
@@ -94,6 +94,7 @@ import {
   getInteger,
   createSolidDataset,
   setThing,
+  setBoolean, // ADDED FIX
   ThingPersisted,
   SolidDataset,
 } from '@inrupt/solid-client';
@@ -1224,8 +1225,6 @@ export default function AuditDashboardPage() {
               <AlertIcon />
               Select which fields contain sensitive personal data. This list is generated from your schema definitions. Stored at <Code>{PRIVACY_MAPPING_PATH}</Code>.
             </Alert>
-            
-            {/* REMOVED: Add Field Dropdown */}
             
             {loadingPrivacy ? <Spinner /> : (
               <VStack spacing={3} align="stretch" maxH="60vh" overflowY="auto" p={2}>
