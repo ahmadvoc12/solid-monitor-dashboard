@@ -62,6 +62,7 @@ import {
   Link,
   Code,
   Tooltip as ChakraTooltip,
+  Checkbox, // ADDED IMPORT
 } from '@chakra-ui/react';
 
 import {
@@ -93,8 +94,6 @@ import {
   getInteger,
   createSolidDataset,
   setThing,
-  setBoolean,
-  setInteger,
   ThingPersisted,
   SolidDataset,
 } from '@inrupt/solid-client';
@@ -278,7 +277,7 @@ type PrivacyMapping = {
 };
 
 /* ======================================================
-   ✅ PARSE ACCESS LOG ENTRY - FIX: Dataset Parameter Added
+   PARSE ACCESS LOG ENTRY
 ====================================================== */
 function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry | null {
   try {
@@ -295,11 +294,9 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
     const accessMethod = getStringNoLocaleAll(thing, `${FORCE}accessMethod`)[0] ?? 'GET';
     const accessedResource = cleanIRI(getUrlAll(thing, `${FORCE}accessedResource`)[0] ?? '');
     
-    // --- PARSE FIELDS ---
     const fields: AccessedField[] = [];
     const fieldsBundle = getUrlAll(thing, `${FORCE}hasFieldsBundle`)[0];
     
-    // ✅ FIX: Use 'dataset' parameter instead of 'thing.dataset'
     if (fieldsBundle) {
       getThingAll(dataset).forEach((fieldThing: any) => {
         const fieldTypes = getUrlAll(fieldThing, `${RDF}type`);
@@ -322,7 +319,6 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
       });
     }
     
-    // --- PARSE POLICY EVALUATIONS ---
     const policyEvaluations: PolicyEvaluation[] = [];
     const policyBundle = getUrlAll(thing, `${FORCE}hasPolicyBundle`)[0];
     if (policyBundle) {
@@ -342,12 +338,10 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
       });
     }
     
-    // --- PARSE VIOLATIONS ---
     const violations: FieldViolation[] = [];
     const violatedPolicies: string[] = [];
     const violationBundle = getUrlAll(thing, `${FORCE}hasViolationBundle`)[0];
     
-    // ✅ FIX: Use 'dataset' parameter instead of 'thing.dataset'
     if (violationBundle) {
       getThingAll(dataset).forEach((violThing: any) => {
         const violTypes = getUrlAll(violThing, `${RDF}type`);
@@ -356,12 +350,10 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
         const belongsToBundle = getUrlAll(violThing, `${FORCE}belongsToBundle`)[0];
         if (!bundlesMatch(belongsToBundle, violationBundle)) return;
         
-        // Collect violated policy URIs
         getUrlAll(violThing, `${FORCE}violatedPolicy`).forEach((p: string) => 
           violatedPolicies.push(cleanIRI(p))
         );
         
-        // Parse nested FieldViolations via hasFieldViolation
         getUrlAll(violThing, `${FORCE}hasFieldViolation`).forEach((fvUrl: string) => {
           const fvThing = getThingAll(dataset).find((t: any) => t.url === fvUrl);
           if (fvThing) {
@@ -445,7 +437,7 @@ export default function AuditDashboardPage() {
   }, [isLoggedIn, router]);
 
   /* =========================
-     LOAD ACCESS LOG - FIX: Pass dataset to parser
+     LOAD ACCESS LOG
   ========================= */
   useEffect(() => {
     if (!session?.info?.webId) return;
@@ -467,7 +459,6 @@ export default function AuditDashboardPage() {
         
         const parsed: AccessLogEntry[] = [];
         
-        // ✅ FIX: Pass 'dataset' to parseAccessLogEntry
         getThingAll(dataset).forEach((thing) => {
           try {
             const entry = parseAccessLogEntry(thing, dataset);
@@ -534,7 +525,10 @@ export default function AuditDashboardPage() {
         const active = getBoolean(thing, `${FORCE}policyActive`) ?? true;
         const createdAt = getDatetime(thing, `${DCT}created`) ?? undefined;
         
-        let constraintValue = 1;
+        let constraintType: 'count' | 'timeWindow' | 'location' = 'count';
+        let constraintValue: string | number = 1;
+        let constraintOperator: 'lteq' | 'gteq' | 'eq' = 'lteq';
+
         const permissions = getUrlAll(thing, `${ODRL}permission`);
         permissions.forEach((permUrl: string) => {
           const permThing = getThingAll(dataset).find((t: any) => t.url === permUrl);
@@ -543,14 +537,29 @@ export default function AuditDashboardPage() {
             constraints.forEach((cUrl: string) => {
               const cThing = getThingAll(dataset).find((t: any) => t.url === cUrl);
               if (cThing) {
-                const val = getInteger(cThing, `${ODRL}rightOperand`);
-                if (val !== null) constraintValue = val;
+                const leftOperand = cleanIRI(getUrlAll(cThing, `${ODRL}leftOperand`)[0] || '');
+                const op = cleanIRI(getUrlAll(cThing, `${ODRL}operator`)[0] || '');
+                
+                if (leftOperand.includes('count')) {
+                  constraintType = 'count';
+                  constraintValue = getInteger(cThing, `${ODRL}rightOperand`) ?? 0;
+                } else if (leftOperand.includes('timeWindow') || leftOperand.includes('duration')) {
+                  constraintType = 'timeWindow';
+                  constraintValue = getInteger(cThing, `${ODRL}rightOperand`) ?? 0;
+                } else if (leftOperand.includes('spatial')) {
+                  constraintType = 'location';
+                  constraintValue = getStringNoLocaleAll(cThing, `${ODRL}rightOperand`)[0] || '';
+                }
+
+                if (op.includes('lteq')) constraintOperator = 'lteq';
+                else if (op.includes('gteq')) constraintOperator = 'gteq';
+                else constraintOperator = 'eq';
               }
             });
           }
         });
         
-        const constraints: PolicyConstraint[] = [{ type: 'count', operator: 'lteq', value: constraintValue }];
+        const constraints: PolicyConstraint[] = [{ type: constraintType, operator: constraintOperator, value: constraintValue }];
         
         parsed.push({
           id: thing.url,
@@ -576,7 +585,7 @@ export default function AuditDashboardPage() {
   };
 
   /* =========================
-     LOAD PRIVACY MAPPINGS
+     LOAD PRIVACY MAPPINGS - FIXED: Suggest List Logic
   ========================= */
   const loadPrivacyMappings = async () => {
     if (!session?.info?.webId) return;
@@ -584,39 +593,42 @@ export default function AuditDashboardPage() {
     try {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
       const mappingUrl = `${podUrls[0]}${PRIVACY_MAPPING_PATH}`;
-      let dataset;
-      try { dataset = await getSolidDataset(mappingUrl, { fetch: session.fetch }); } catch { dataset = createSolidDataset(); }
       
-      const mappings: PrivacyMapping[] = [];
-      const fields = new Set<string>();
+      let savedMappings: PrivacyMapping[] = [];
       
-      getThingAll(dataset).forEach((thing: any) => {
-        const fieldIri = cleanIRI(getUrlAll(thing, `${EX}fieldIri`)[0]);
-        if (!fieldIri) return;
-        fields.add(fieldIri);
-        mappings.push({
-          fieldIri,
-          fieldLabel: getFieldLabel(fieldIri),
-          isSensitive: getBoolean(thing, `${EX}isSensitive`) ?? false,
-          dataCategory: getUrlAll(thing, `${EX}dataCategory`)[0] || 'dpv:PersonalData',
-          personalDataType: getUrlAll(thing, `${EX}personalDataType`)[0] || 'dpv:Data',
-        });
-      });
-      
-      Object.entries(FIELD_LABELS).forEach(([iri, label]) => {
-        const cleanIri = cleanIRI(iri);
-        if (!fields.has(cleanIri)) {
-          mappings.push({
-            fieldIri: cleanIri,
-            fieldLabel: label,
-            isSensitive: true,
-            dataCategory: 'dpv:PersonalData',
-            personalDataType: 'dpv:Data',
+      try {
+        const dataset = await getSolidDataset(mappingUrl, { fetch: session.fetch });
+        getThingAll(dataset).forEach((thing: any) => {
+          const fieldIri = cleanIRI(getUrlAll(thing, `${EX}fieldIri`)[0]);
+          if (!fieldIri) return;
+          savedMappings.push({
+            fieldIri,
+            fieldLabel: getFieldLabel(fieldIri),
+            isSensitive: getBoolean(thing, `${EX}isSensitive`) ?? false,
+            dataCategory: getUrlAll(thing, `${EX}dataCategory`)[0] || 'dpv:PersonalData',
+            personalDataType: getUrlAll(thing, `${EX}personalDataType`)[0] || 'dpv:Data',
           });
-        }
+        });
+      } catch (e) {
+        // File doesn't exist yet, that's fine
+      }
+
+      // Create a map of saved settings for easy lookup
+      const savedMap = new Map(savedMappings.map(m => [m.fieldIri, m.isSensitive]));
+
+      // Initialize with ALL FIELD_LABELS (Suggest List)
+      const finalMappings: PrivacyMapping[] = Object.entries(FIELD_LABELS).map(([iri, label]) => {
+        const cleanIri = cleanIRI(iri);
+        return {
+          fieldIri: cleanIri,
+          fieldLabel: label,
+          isSensitive: savedMap.get(cleanIri) ?? false, // Use saved value or default to false
+          dataCategory: 'dpv:PersonalData',
+          personalDataType: 'dpv:Data',
+        };
       });
       
-      setPrivacyMappings(mappings);
+      setPrivacyMappings(finalMappings);
       setAvailableFields(Object.keys(FIELD_LABELS).map(cleanIRI));
     } catch (err) {
       console.error('Failed to load privacy mappings:', err);
@@ -626,7 +638,7 @@ export default function AuditDashboardPage() {
   };
 
   /* =========================
-     SAVE POLICY
+     SAVE POLICY - FIXED: Handle TimeWindow & Location
   ========================= */
   const savePolicy = async (policy: Policy) => {
     if (!session?.info?.webId) return;
@@ -644,21 +656,40 @@ export default function AuditDashboardPage() {
         policyThing = createThing({ url: `${podUrls[0]}${POLICY_PATH}#${policy.id}` });
       }
       
+      // Resolve full IRI from short name (e.g., "bloodType" -> "https://schema.org/bloodType")
+      const fullTargetIri = Object.keys(FIELD_LABELS).find(iri => shortIri(cleanIRI(iri)) === policy.targetField) || policy.targetField;
+
       policyThing = setUrl(policyThing, `${RDF}type`, `${ODRL}Policy`);
       policyThing = setStringNoLocale(policyThing, `${DCT}title`, policy.title);
       policyThing = setStringNoLocale(policyThing, `${DCT}description`, policy.description || '');
       policyThing = setDatetime(policyThing, `${DCT}created`, policy.createdAt || new Date());
-      policyThing = setUrl(policyThing, `${ODRL}target`, policy.targetIRI || policy.targetField);
+      policyThing = setUrl(policyThing, `${ODRL}target`, fullTargetIri);
       policyThing = setBoolean(policyThing, `${FORCE}policyActive`, policy.active);
       
       const constraint = policy.constraints[0];
-      if (constraint?.type === 'count') {
+      
+      if (constraint) {
         let constraintThing = createThing({ url: `${policyThing.url}#constraint-${Date.now()}` });
-        constraintThing = setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}count`);
-        constraintThing = setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
-        constraintThing = setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value));
-        
         let permissionThing = createThing({ url: `${policyThing.url}#permission-${Date.now()}` });
+
+        // --- FIX: Handle different constraint types ---
+        if (constraint.type === 'count') {
+          constraintThing = setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}count`);
+          constraintThing = setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
+          constraintThing = setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value));
+        } 
+        else if (constraint.type === 'timeWindow') {
+          // Using custom predicate for timeWindow example
+          constraintThing = setUrl(constraintThing, `${ODRL}leftOperand`, `${EX}timeWindow`);
+          constraintThing = setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
+          constraintThing = setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value));
+        } 
+        else if (constraint.type === 'location') {
+          constraintThing = setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}spatial`);
+          constraintThing = setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
+          constraintThing = setStringNoLocale(constraintThing, `${ODRL}rightOperand`, String(constraint.value));
+        }
+
         permissionThing = setUrl(permissionThing, `${ODRL}assigner`, `${EX}pod-owner`);
         permissionThing = setUrl(permissionThing, `${ODRL}assignee`, `${EX}any-app`);
         permissionThing = setUrl(permissionThing, `${ODRL}action`, `${ODRL}read`);
@@ -775,22 +806,6 @@ export default function AuditDashboardPage() {
 
   const handleToggleSensitivity = (fieldIri: string, newValue: boolean) => {
     setPrivacyMappings((prev) => prev.map((m) => (m.fieldIri === fieldIri ? { ...m, isSensitive: newValue } : m)));
-  };
-
-  const handleAddFieldFromDropdown = (fieldIri: string) => {
-    const cleanIri = cleanIRI(fieldIri);
-    const label = FIELD_LABELS[cleanIri] || getFieldLabel(cleanIri);
-    const newField: PrivacyMapping = {
-      fieldIri: cleanIri,
-      fieldLabel: label,
-      isSensitive: true,
-      dataCategory: 'dpv:PersonalData',
-      personalDataType: 'dpv:Data',
-    };
-    setPrivacyMappings((prev) => {
-      if (prev.find((p) => p.fieldIri === cleanIri)) return prev;
-      return [...prev, newField];
-    });
   };
 
   const SchemaVisualization = ({ fields }: { fields: AccessedField[] }) => {
@@ -1054,7 +1069,7 @@ export default function AuditDashboardPage() {
         </Tabs>
       )}
 
-      {/* POLICY SETTINGS MODAL */}
+      {/* POLICY SETTINGS MODAL - FIXED: UI for TimeWindow & Location */}
       <Modal isOpen={isPolicyModalOpen} onClose={onPolicyModalClose} size="4xl">
         <ModalOverlay />
         <ModalContent bg="white" color="black">
@@ -1098,29 +1113,50 @@ export default function AuditDashboardPage() {
                       <VStack spacing={3} align="stretch">
                         {newPolicy.constraints?.map((constraint, idx) => (
                           <HStack key={`${newPolicy.title || 'new'}-constraint-${idx}`} spacing={3} align="start">
-                            <Select value={constraint.type} onChange={(e) => {
-                                const nc = [...(newPolicy.constraints || [])]; nc[idx] = { ...constraint, type: e.target.value as PolicyConstraint['type'] }; setNewPolicy((p) => ({ ...p, constraints: nc }));
-                              }} size="sm" width="150px">
+                            <Select 
+                                value={constraint.type} 
+                                onChange={(e) => {
+                                    const nc = [...(newPolicy.constraints || [])]; 
+                                    nc[idx] = { ...constraint, type: e.target.value as PolicyConstraint['type'], value: e.target.value === 'location' ? '' : 1 }; 
+                                    setNewPolicy((p) => ({ ...p, constraints: nc }));
+                                }} 
+                                size="sm" width="150px">
                               <option value="count">Access Count</option>
                               <option value="timeWindow">Time Window</option>
+                              <option value="location">Location</option>
                             </Select>
-                            {constraint.type === 'count' && (
-                              <>
-                                <Select value={constraint.operator} onChange={(e) => {
-                                    const nc = [...(newPolicy.constraints || [])]; nc[idx] = { ...constraint, operator: e.target.value as PolicyConstraint['operator'] }; setNewPolicy((p) => ({ ...p, constraints: nc }));
-                                  }} size="sm" width="100px">
-                                  <option value="lteq">≤</option>
-                                  <option value="gteq">≥</option>
-                                </Select>
+                            
+                            <Select value={constraint.operator} onChange={(e) => {
+                                const nc = [...(newPolicy.constraints || [])]; nc[idx] = { ...constraint, operator: e.target.value as PolicyConstraint['operator'] }; setNewPolicy((p) => ({ ...p, constraints: nc }));
+                              }} size="sm" width="100px">
+                              <option value="lteq">≤</option>
+                              <option value="gteq">≥</option>
+                              <option value="eq">=</option>
+                            </Select>
+
+                            {/* FIXED: Conditional Input based on Type */}
+                            {constraint.type === 'location' ? (
+                                <Input 
+                                    placeholder="City, Region, or Country" 
+                                    value={constraint.value as string} 
+                                    onChange={(e) => {
+                                        const nc = [...(newPolicy.constraints || [])]; nc[idx] = { ...constraint, value: e.target.value }; setNewPolicy((p) => ({ ...p, constraints: nc }));
+                                    }} 
+                                    size="sm" 
+                                />
+                            ) : (
                                 <NumberInput value={constraint.value as number} onChange={(_, val) => {
                                     const nc = [...(newPolicy.constraints || [])]; nc[idx] = { ...constraint, value: val }; setNewPolicy((p) => ({ ...p, constraints: nc }));
-                                  }} size="sm" width="80px">
+                                  }} size="sm" width="100px">
                                   <NumberInputField />
                                   <NumberInputStepper><NumberIncrementStepper /><NumberDecrementStepper /></NumberInputStepper>
                                 </NumberInput>
-                                <Text fontSize="sm" color="gray.600">accesses</Text>
-                              </>
                             )}
+
+                            <Text fontSize="sm" color="gray.600">
+                                {constraint.type === 'count' ? 'accesses' : 
+                                 constraint.type === 'timeWindow' ? 'hours' : ''}
+                            </Text>
                           </HStack>
                         ))}
                       </VStack>
@@ -1156,7 +1192,7 @@ export default function AuditDashboardPage() {
                         <Td><Tag size="sm" colorScheme="purple">{policy.targetField}</Tag></Td>
                         <Td>
                           {policy.constraints.map((c, idx) => (
-                            <Text key={`${policy.id}-c-${idx}`} fontSize="xs">{c.type === 'count' ? `Count ${c.operator} ${c.value}` : c.type}</Text>
+                            <Text key={`${policy.id}-c-${idx}`} fontSize="xs">{c.type === 'count' ? `Count ${c.operator} ${c.value}` : c.type === 'timeWindow' ? `Time ${c.operator} ${c.value}` : `Location ${c.operator} ${c.value}`}</Text>
                           ))}
                         </Td>
                         <Td><Switch size="sm" isChecked={policy.active} onChange={() => handleTogglePolicyActive(policy)} /></Td>
@@ -1177,7 +1213,7 @@ export default function AuditDashboardPage() {
         </ModalContent>
       </Modal>
 
-      {/* PRIVACY SETTINGS MODAL */}
+      {/* PRIVACY SETTINGS MODAL - FIXED: Suggest List with Checkbox */}
       <Modal isOpen={isPrivacyModalOpen} onClose={onPrivacyModalClose} size="2xl">
         <ModalOverlay />
         <ModalContent bg="white" color="black">
@@ -1186,39 +1222,41 @@ export default function AuditDashboardPage() {
           <ModalBody>
             <Alert status="info" mb={4}>
               <AlertIcon />
-              Mark which fields contain sensitive personal data. Stored at <Code>{PRIVACY_MAPPING_PATH}</Code>.
+              Select which fields contain sensitive personal data. This list is generated from your schema definitions. Stored at <Code>{PRIVACY_MAPPING_PATH}</Code>.
             </Alert>
-            <FormControl mb={4}>
-              <FormLabel>Add Field to Monitor</FormLabel>
-              <HStack spacing={2}>
-                <Select placeholder="Select a field" onChange={(e) => { if (e.target.value) { handleAddFieldFromDropdown(e.target.value); e.target.value = ''; } }}>
-                  {Object.entries(FIELD_LABELS).map(([iri, label]) => {
-                    const cleanIri = cleanIRI(iri);
-                    const exists = privacyMappings.some((m) => m.fieldIri === cleanIri);
-                    return (<option key={iri} value={iri} disabled={exists}>{label} {exists ? '(added)' : ''}</option>);
-                  })}
-                </Select>
-                <Button colorScheme="blue">Add</Button>
-              </HStack>
-            </FormControl>
+            
+            {/* REMOVED: Add Field Dropdown */}
+            
             {loadingPrivacy ? <Spinner /> : (
-              <VStack spacing={4} align="stretch" maxH="60vh" overflowY="auto">
+              <VStack spacing={3} align="stretch" maxH="60vh" overflowY="auto" p={2}>
                 {privacyMappings.map((mapping) => (
-                  <Box key={mapping.fieldIri} p={4} borderRadius="md" borderWidth="1px" borderColor="gray.200">
-                    <HStack justify="space-between" wrap="wrap" gap={2}>
-                      <VStack align="start" spacing={1} flex={1}>
+                  <Flex 
+                    key={mapping.fieldIri} 
+                    p={3} 
+                    borderRadius="md" 
+                    borderWidth="1px" 
+                    borderColor="gray.200" 
+                    alignItems="center" 
+                    justifyContent="space-between"
+                    _hover={{ bg: 'gray.50' }}
+                  >
+                    <VStack align="start" spacing={1} flex={1}>
+                      <HStack>
                         <Text fontWeight="medium">{mapping.fieldLabel}</Text>
-                        <Text fontSize="xs" color="gray.600" wordBreak="break-all">{mapping.fieldIri}</Text>
-                        <HStack spacing={2}>
-                          <Tag size="sm" colorScheme="blue">{shortIri(mapping.dataCategory)}</Tag>
-                        </HStack>
-                      </VStack>
-                      <FormControl display="flex" alignItems="center" width="auto">
-                        <Switch isChecked={mapping.isSensitive} onChange={(e) => handleToggleSensitivity(mapping.fieldIri, e.target.checked)} colorScheme={mapping.isSensitive ? 'red' : 'green'} />
-                        <FormLabel mb="0" ml={3} fontSize="sm">{mapping.isSensitive ? 'Sensitive' : 'Normal'}</FormLabel>
-                      </FormControl>
-                    </HStack>
-                  </Box>
+                        {mapping.isSensitive && <Badge colorScheme="red" variant="subtle" fontSize="xs">Sensitive</Badge>}
+                      </HStack>
+                      <Text fontSize="xs" color="gray.500" wordBreak="break-all">{mapping.fieldIri}</Text>
+                    </VStack>
+                    
+                    <Checkbox 
+                        isChecked={mapping.isSensitive} 
+                        onChange={(e) => handleToggleSensitivity(mapping.fieldIri, e.target.checked)} 
+                        colorScheme="red"
+                        size="lg"
+                    >
+                        <Text fontSize="sm" ml={2} color="gray.600">Mark as Sensitive</Text>
+                    </Checkbox>
+                  </Flex>
                 ))}
               </VStack>
             )}
