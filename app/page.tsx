@@ -62,7 +62,7 @@ import {
   Link,
   Code,
   Tooltip as ChakraTooltip,
-  Checkbox, // ADDED IMPORT
+  Checkbox,
 } from '@chakra-ui/react';
 
 import {
@@ -94,8 +94,8 @@ import {
   getInteger,
   createSolidDataset,
   setThing,
-  setBoolean, // ADDED IMPORT
-  setInteger, // ADDED IMPORT
+  setBoolean,
+  setInteger,
   ThingPersisted,
   SolidDataset,
 } from '@inrupt/solid-client';
@@ -232,7 +232,7 @@ type PolicyEvaluation = {
 
 type FieldViolation = {
   violatedField: string;
-  violatedPolicy: string;
+  violatedPolicy: string; // This holds the IRI/ID
   observedCount: number;
   allowedLimit: number;
 };
@@ -605,21 +605,16 @@ export default function AuditDashboardPage() {
         console.log(`🔍 Found ${things.length} things in privacy mapping file.`);
 
         things.forEach((thing: any) => {
-          // STRATEGY 1: Try to find the 'ex:fieldIri' property (Standard format)
           let fieldIri = cleanIRI(getUrlAll(thing, `${EX}fieldIri`)[0]);
 
-          // STRATEGY 2 (Fallback): If property is missing, check if the Thing URL itself is a known Schema IRI
-          // This handles cases where the file was edited manually with the Subject as the Schema IRI
           if (!fieldIri) {
             const possibleIri = cleanIRI(thing.url);
-            // Check if this URL exists in our known FIELD_LABELS
             if (FIELD_LABELS[possibleIri]) {
               fieldIri = possibleIri;
             }
           }
 
           if (fieldIri) {
-            // Get boolean sensitivity. If it returns null (not found), default to false.
             const isSensitive = getBoolean(thing, `${EX}isSensitive`) ?? false;
             
             savedMappings.push({
@@ -632,20 +627,17 @@ export default function AuditDashboardPage() {
           }
         });
       } catch (e: any) {
-        // File doesn't exist yet or permission denied to read. We will create defaults.
         console.log('Privacy mapping file not found or unreadable. Creating defaults.', e);
       }
 
-      // Create a map of saved settings for easy lookup
       const savedMap = new Map(savedMappings.map(m => [m.fieldIri, m.isSensitive]));
 
-      // Initialize with ALL FIELD_LABELS (Suggest List)
       const finalMappings: PrivacyMapping[] = Object.entries(FIELD_LABELS).map(([iri, label]) => {
         const cleanIri = cleanIRI(iri);
         return {
           fieldIri: cleanIri,
           fieldLabel: label,
-          isSensitive: savedMap.get(cleanIri) ?? false, // Use saved value or default to false
+          isSensitive: savedMap.get(cleanIri) ?? false,
           dataCategory: 'dpv:PersonalData',
           personalDataType: 'dpv:Data',
         };
@@ -684,7 +676,6 @@ export default function AuditDashboardPage() {
         policyThing = createThing({ url: `${podUrls[0]}${POLICY_PATH}#${policy.id}` });
       }
       
-      // Resolve full IRI from short name (e.g., "bloodType" -> "https://schema.org/bloodType")
       const fullTargetIri = Object.keys(FIELD_LABELS).find(iri => shortIri(cleanIRI(iri)) === policy.targetField) || policy.targetField;
 
       policyThing = setUrl(policyThing, `${RDF}type`, `${ODRL}Policy`);
@@ -700,14 +691,12 @@ export default function AuditDashboardPage() {
         let constraintThing = createThing({ url: `${policyThing.url}#constraint-${Date.now()}` });
         let permissionThing = createThing({ url: `${policyThing.url}#permission-${Date.now()}` });
 
-        // --- HANDLE DIFFERENT CONSTRAINT TYPES ---
         if (constraint.type === 'count') {
           constraintThing = setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}count`);
           constraintThing = setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
           constraintThing = setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value));
         } 
         else if (constraint.type === 'timeWindow') {
-          // Using custom predicate for timeWindow example
           constraintThing = setUrl(constraintThing, `${ODRL}leftOperand`, `${EX}timeWindow`);
           constraintThing = setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
           constraintThing = setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value));
@@ -742,7 +731,7 @@ export default function AuditDashboardPage() {
   };
 
   /* =========================
-     SAVE PRIVACY MAPPINGS - DETAILED ERROR REPORTING
+     SAVE PRIVACY MAPPINGS
   ========================= */
   const savePrivacyMappings = async () => {
     if (!session?.info?.webId) return;
@@ -769,7 +758,6 @@ export default function AuditDashboardPage() {
         status: 'success' 
       });
       
-      // Reload to ensure UI matches server state
       await loadPrivacyMappings();
     } catch (err: any) {
       console.error('Failed to save privacy mappings:', err);
@@ -1026,11 +1014,15 @@ export default function AuditDashboardPage() {
                           <Alert status="warning" fontSize="sm">
                             <VStack align="start" spacing={1}>
                               <Text fontWeight="medium">Violation Details:</Text>
-                              {log.violations.map((v, idx) => (
-                                <Text key={`${log.accessId}-violation-${idx}`} fontSize="xs">
-                                  {getFieldLabel(v.violatedField)}: {v.observedCount} &gt; {v.allowedLimit} (policy: {shortIri(v.violatedPolicy)})
-                                </Text>
-                              ))}
+                              {log.violations.map((v, idx) => {
+                                  const violatedPolicyObj = policies.find(p => p.id === v.violatedPolicy);
+                                  const policyTitle = violatedPolicyObj ? violatedPolicyObj.title : shortIri(v.violatedPolicy);
+                                  return (
+                                    <Text key={`${log.accessId}-violation-${idx}`} fontSize="xs">
+                                      {getFieldLabel(v.violatedField)}: {v.observedCount} &gt; {v.allowedLimit} ({policyTitle})
+                                    </Text>
+                                  );
+                              })}
                             </VStack>
                           </Alert>
                         )}
@@ -1080,7 +1072,7 @@ export default function AuditDashboardPage() {
               </Card>
             </TabPanel>
             
-            {/* TAB 3: VIOLATION REPORT */}
+            {/* TAB 3: VIOLATION REPORT - UPDATED WITH POLICY ID */}
             <TabPanel>
               <Card>
                 <CardHeader><Text fontWeight="bold">Policy Violation Report</Text></CardHeader>
@@ -1091,26 +1083,34 @@ export default function AuditDashboardPage() {
                         <Th>Time</Th>
                         <Th>App</Th>
                         <Th>Violated Field</Th>
-                        <Th>Policy</Th>
+                        <Th>Policy Title</Th>
+                        <Th>Policy ID</Th>
                         <Th>Count</Th>
                         <Th>Limit</Th>
                       </Tr>
                     </Thead>
                     <Tbody>
                       {filteredLogs.filter((l) => l.violations.length > 0).flatMap((log) =>
-                        log.violations.map((v, idx) => (
-                          <Tr key={`${log.accessId}-${v.violatedField}-${idx}`} bg="red.50">
-                            <Td>{log.startedAt?.toLocaleString()}</Td>
-                            <Td textTransform="capitalize">{log.app}</Td>
-                            <Td>{getFieldLabel(v.violatedField)}</Td>
-                            <Td>{shortIri(v.violatedPolicy)}</Td>
-                            <Td><Badge colorScheme="red">{v.observedCount}</Badge></Td>
-                            <Td>{v.allowedLimit}</Td>
-                          </Tr>
-                        ))
+                        log.violations.map((v, idx) => {
+                          // Find policy title based on ID to handle duplicate names
+                          const violatedPolicyObj = policies.find(p => p.id === v.violatedPolicy);
+                          const policyTitle = violatedPolicyObj ? violatedPolicyObj.title : 'Unknown Policy';
+                          
+                          return (
+                            <Tr key={`${log.accessId}-${v.violatedField}-${idx}`} bg="red.50">
+                              <Td>{log.startedAt?.toLocaleString()}</Td>
+                              <Td textTransform="capitalize">{log.app}</Td>
+                              <Td>{getFieldLabel(v.violatedField)}</Td>
+                              <Td fontWeight="medium">{policyTitle}</Td>
+                              <Td><Code fontSize="xs">{shortIri(v.violatedPolicy)}</Code></Td>
+                              <Td><Badge colorScheme="red">{v.observedCount}</Badge></Td>
+                              <Td>{v.allowedLimit}</Td>
+                            </Tr>
+                          );
+                        })
                       )}
                       {filteredLogs.filter((l) => l.violations.length > 0).length === 0 && (
-                        <Tr><Td colSpan={6} textAlign="center">No violations recorded</Td></Tr>
+                        <Tr><Td colSpan={7} textAlign="center">No violations recorded</Td></Tr>
                       )}
                     </Tbody>
                   </Table>
@@ -1186,7 +1186,6 @@ export default function AuditDashboardPage() {
                               <option value="eq">=</option>
                             </Select>
 
-                            {/* Conditional Input based on Type */}
                             {constraint.type === 'location' ? (
                                 <Input 
                                     placeholder="City, Region, or Country" 
