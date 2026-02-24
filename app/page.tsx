@@ -62,7 +62,7 @@ import {
   Link,
   Code,
   Tooltip as ChakraTooltip,
-  Checkbox,
+  Checkbox, // ADDED IMPORT
 } from '@chakra-ui/react';
 
 import {
@@ -94,8 +94,8 @@ import {
   getInteger,
   createSolidDataset,
   setThing,
-  setBoolean, // ADDED
-  setInteger, // ADDED
+  setBoolean, // ADDED IMPORT
+  setInteger, // ADDED IMPORT
   ThingPersisted,
   SolidDataset,
 } from '@inrupt/solid-client';
@@ -587,7 +587,7 @@ export default function AuditDashboardPage() {
   };
 
   /* =========================
-     LOAD PRIVACY MAPPINGS - FIXED: Suggest List Logic
+     LOAD PRIVACY MAPPINGS - ROBUST VERSION
   ========================= */
   const loadPrivacyMappings = async () => {
     if (!session?.info?.webId) return;
@@ -600,19 +600,40 @@ export default function AuditDashboardPage() {
       
       try {
         const dataset = await getSolidDataset(mappingUrl, { fetch: session.fetch });
-        getThingAll(dataset).forEach((thing: any) => {
-          const fieldIri = cleanIRI(getUrlAll(thing, `${EX}fieldIri`)[0]);
-          if (!fieldIri) return;
-          savedMappings.push({
-            fieldIri,
-            fieldLabel: getFieldLabel(fieldIri),
-            isSensitive: getBoolean(thing, `${EX}isSensitive`) ?? false,
-            dataCategory: getUrlAll(thing, `${EX}dataCategory`)[0] || 'dpv:PersonalData',
-            personalDataType: getUrlAll(thing, `${EX}personalDataType`)[0] || 'dpv:Data',
-          });
+        const things = getThingAll(dataset);
+        
+        console.log(`🔍 Found ${things.length} things in privacy mapping file.`);
+
+        things.forEach((thing: any) => {
+          // STRATEGY 1: Try to find the 'ex:fieldIri' property (Standard format)
+          let fieldIri = cleanIRI(getUrlAll(thing, `${EX}fieldIri`)[0]);
+
+          // STRATEGY 2 (Fallback): If property is missing, check if the Thing URL itself is a known Schema IRI
+          // This handles cases where the file was edited manually with the Subject as the Schema IRI
+          if (!fieldIri) {
+            const possibleIri = cleanIRI(thing.url);
+            // Check if this URL exists in our known FIELD_LABELS
+            if (FIELD_LABELS[possibleIri]) {
+              fieldIri = possibleIri;
+            }
+          }
+
+          if (fieldIri) {
+            // Get boolean sensitivity. If it returns null (not found), default to false.
+            const isSensitive = getBoolean(thing, `${EX}isSensitive`) ?? false;
+            
+            savedMappings.push({
+              fieldIri,
+              fieldLabel: getFieldLabel(fieldIri),
+              isSensitive,
+              dataCategory: getUrlAll(thing, `${EX}dataCategory`)[0] || 'dpv:PersonalData',
+              personalDataType: getUrlAll(thing, `${EX}personalDataType`)[0] || 'dpv:Data',
+            });
+          }
         });
-      } catch (e) {
-        // File doesn't exist yet, that's fine
+      } catch (e: any) {
+        // File doesn't exist yet or permission denied to read. We will create defaults.
+        console.log('Privacy mapping file not found or unreadable. Creating defaults.', e);
       }
 
       // Create a map of saved settings for easy lookup
@@ -633,14 +654,19 @@ export default function AuditDashboardPage() {
       setPrivacyMappings(finalMappings);
       setAvailableFields(Object.keys(FIELD_LABELS).map(cleanIRI));
     } catch (err) {
-      console.error('Failed to load privacy mappings:', err);
+      console.error('Critical error loading privacy mappings:', err);
+      toast({
+        title: 'Load Error',
+        description: 'Could not load privacy settings. Using defaults.',
+        status: 'warning',
+      });
     } finally {
       setLoadingPrivacy(false);
     }
   };
 
   /* =========================
-     SAVE POLICY - FIXED: Handle TimeWindow & Location
+     SAVE POLICY
   ========================= */
   const savePolicy = async (policy: Policy) => {
     if (!session?.info?.webId) return;
@@ -674,7 +700,7 @@ export default function AuditDashboardPage() {
         let constraintThing = createThing({ url: `${policyThing.url}#constraint-${Date.now()}` });
         let permissionThing = createThing({ url: `${policyThing.url}#permission-${Date.now()}` });
 
-        // --- FIX: Handle different constraint types ---
+        // --- HANDLE DIFFERENT CONSTRAINT TYPES ---
         if (constraint.type === 'count') {
           constraintThing = setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}count`);
           constraintThing = setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
@@ -716,7 +742,7 @@ export default function AuditDashboardPage() {
   };
 
   /* =========================
-     SAVE PRIVACY MAPPINGS
+     SAVE PRIVACY MAPPINGS - DETAILED ERROR REPORTING
   ========================= */
   const savePrivacyMappings = async () => {
     if (!session?.info?.webId) return;
@@ -736,10 +762,34 @@ export default function AuditDashboardPage() {
       });
       
       await saveSolidDatasetAt(mappingUrl, dataset, { fetch: session.fetch });
-      toast({ title: 'Privacy settings saved', description: 'Field sensitivity mappings have been updated', status: 'success' });
+      
+      toast({ 
+        title: 'Success', 
+        description: 'Privacy settings saved successfully.', 
+        status: 'success' 
+      });
+      
+      // Reload to ensure UI matches server state
+      await loadPrivacyMappings();
     } catch (err: any) {
       console.error('Failed to save privacy mappings:', err);
-      toast({ title: 'Failed to save privacy settings', status: 'error' });
+      
+      let errorMessage = 'Unknown error';
+      if (err.statusCode === 403 || err.statusCode === 401) {
+        errorMessage = 'Permission Denied. Please check your WebID ACLs for the private/ folder.';
+      } else if (err.statusCode === 404) {
+        errorMessage = 'Container not found. Please ensure your Pod has a private/ folder.';
+      } else if (err.message) {
+        errorMessage = err.message;
+      }
+
+      toast({ 
+        title: 'Failed to save privacy settings', 
+        description: errorMessage, 
+        status: 'error',
+        duration: 7000,
+        isClosable: true,
+      });
       throw err;
     }
   };
@@ -1071,7 +1121,7 @@ export default function AuditDashboardPage() {
         </Tabs>
       )}
 
-      {/* POLICY SETTINGS MODAL - FIXED: UI for TimeWindow & Location */}
+      {/* POLICY SETTINGS MODAL */}
       <Modal isOpen={isPolicyModalOpen} onClose={onPolicyModalClose} size="4xl">
         <ModalOverlay />
         <ModalContent bg="white" color="black">
@@ -1136,7 +1186,7 @@ export default function AuditDashboardPage() {
                               <option value="eq">=</option>
                             </Select>
 
-                            {/* FIXED: Conditional Input based on Type */}
+                            {/* Conditional Input based on Type */}
                             {constraint.type === 'location' ? (
                                 <Input 
                                     placeholder="City, Region, or Country" 
@@ -1215,7 +1265,7 @@ export default function AuditDashboardPage() {
         </ModalContent>
       </Modal>
 
-      {/* PRIVACY SETTINGS MODAL - FIXED: Suggest List with Checkbox */}
+      {/* PRIVACY SETTINGS MODAL */}
       <Modal isOpen={isPrivacyModalOpen} onClose={onPrivacyModalClose} size="2xl">
         <ModalOverlay />
         <ModalContent bg="white" color="black">
