@@ -94,7 +94,8 @@ import {
   getInteger,
   createSolidDataset,
   setThing,
-  setBoolean, // ADDED FIX
+  setBoolean, // ADDED
+  setInteger, // ADDED
   ThingPersisted,
   SolidDataset,
 } from '@inrupt/solid-client';
