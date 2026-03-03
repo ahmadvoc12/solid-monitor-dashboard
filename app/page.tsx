@@ -183,7 +183,7 @@ function isWithinDays(date: Date | null, days: number) {
   return diff <= days * 24 * 60 * 60 * 1000;
 }
 
-// ✅ Generate UUID v4 format: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx
+// ✅ Generate UUID v4 format
 function generateUUID(): string {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
     const r = Math.random() * 16 | 0;
@@ -275,7 +275,7 @@ type PolicyEvaluation = {
 
 type FieldViolation = {
   violatedField: string;
-  violatedPolicy: string;
+  violatedPolicy: string; // Holds the dct:identifier value
   observedCount: number;
   allowedLimit: number;
 };
@@ -302,7 +302,7 @@ type PolicyConstraint = {
   unit?: 'hours' | 'days' | 'km';
 };
 
-// ✅ UPDATED: identifier is auto-generated, not user-input
+// ✅ UPDATED: identifier is auto-generated
 type Policy = {
   id: string;
   identifier?: string; // ✅ Auto-generated as urn:uuid:...
@@ -836,7 +836,7 @@ export default function AuditDashboardPage() {
 
   useEffect(() => { loadPrivacyMappings(); }, [session]);
 
-  /* ========================= SAVE POLICY - FIXED: Auto-generate Identifier ========================= */
+  /* ========================= SAVE POLICY - FIXED: Auto-generate Identifier & Blank Nodes ========================= */
   const savePolicy = async (policy: Policy) => {
     if (!session?.info?.webId) return;
     try {
@@ -845,56 +845,87 @@ export default function AuditDashboardPage() {
       let dataset;
       try { dataset = await getSolidDataset(policyUrl, { fetch: session.fetch }); } catch { dataset = createSolidDataset(); }
       
-      let policyThing: ThingPersisted;
-      if (policy.id.startsWith('http')) {
-        const existingThing = getThingAll(dataset).find((t) => t.url === policy.id);
-        policyThing = existingThing ?? createThing({ url: policy.id });
-      } else {
-        policyThing = createThing({ url: `${podUrls[0]}${POLICY_PATH}#${policy.id}` });
-      }
+      // ✅ Generate clean, human-readable subject URL (ex:policy-bloodtype-xxxx)
+      const targetShort = policy.targetField.replace(/[^a-z0-9]/gi, '-').toLowerCase();
+      const hash = Math.random().toString(36).slice(2, 10);
+      const policySubjectUrl = `${EX_BASE}policy-${targetShort}-${hash}`;
       
-      const fullTargetIri = Object.keys(FIELD_LABELS).find(iri => shortIri(cleanIRI(iri)) === policy.targetField) || policy.targetField;
+      let policyThing = createThing({ url: policySubjectUrl });
+      
+      // ✅ Set core policy properties
       policyThing = setUrl(policyThing, `${RDF}type`, `${ODRL}Policy`);
-      policyThing = setStringNoLocale(policyThing, `${DCT}title`, policy.title);
-      policyThing = setStringNoLocale(policyThing, `${DCT}description`, policy.description || '');
       
-      // ✅ Auto-generate dct:identifier if not exists (for new policies)
+      // ✅ Auto-generate dct:identifier if not exists
       if (!policy.identifier) {
         policy.identifier = generatePolicyIdentifier();
       }
       policyThing = setStringNoLocale(policyThing, `${DCT}identifier`, policy.identifier);
       
-      policyThing = setDatetime(policyThing, `${DCT}created`, policy.createdAt || new Date());
+      policyThing = setStringNoLocale(policyThing, `${DCT}title`, policy.title);
+      policyThing = setStringNoLocale(policyThing, `${DCT}description`, policy.description || '');
+      
+      // ✅ Format timestamp without milliseconds: "2026-02-13T09:00:00Z"
+      const createdDate = policy.createdAt || new Date();
+      const timestamp = createdDate.toISOString().replace(/\.\d{3}Z$/, 'Z');
+      policyThing = setDatetime(policyThing, `${DCT}created`, new Date(timestamp));
+      
+      // ✅ Add dct:creator
+      policyThing = setUrl(policyThing, `${DCT}creator`, `${EX_BASE}pod-owner`);
+      
+      // ✅ Add odrl:profile
+      policyThing = setUrl(policyThing, `${ODRL}profile`, 'https://w3id.org/dpv/odrl');
+      
+      // Set target
+      const fullTargetIri = Object.keys(FIELD_LABELS).find(iri => shortIri(cleanIRI(iri)) === policy.targetField) || policy.targetField;
       policyThing = setUrl(policyThing, `${ODRL}target`, fullTargetIri);
       policyThing = setBoolean(policyThing, `${FORCE}policyActive`, policy.active);
       
       const constraint = policy.constraints[0];
       if (constraint) {
-        let constraintThing = createThing({ url: `${policyThing.url}#constraint-${Date.now()}` });
-        let permissionThing = createThing({ url: `${policyThing.url}#permission-${Date.now()}` });
+        // ✅ Use blank nodes with format _:b752_n3-x (as requested)
+        const blankPrefix = `b752_n3-${Date.now().toString(36).slice(-4)}-${Math.random().toString(36).slice(2, 4)}`;
+        const constraintBlankId = `_:${blankPrefix}-constraint`;
+        const permissionBlankId = `_:${blankPrefix}-permission`;
+        const prohibitionBlankId = `_:${blankPrefix}-prohibition`;
+        
+        const constraintThing = createThing({ url: constraintBlankId });
+        const permissionThing = createThing({ url: permissionBlankId });
+        const prohibitionThing = createThing({ url: prohibitionBlankId });
         
         if (constraint.type === 'count') {
-          constraintThing = setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}count`);
-          constraintThing = setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
-          constraintThing = setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value));
+          setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}count`);
+          setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
+          setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value));
         } else if (constraint.type === 'timeWindow') {
-          constraintThing = setUrl(constraintThing, `${ODRL}leftOperand`, `${EX_BASE}timeWindow`);
-          constraintThing = setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
-          constraintThing = setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value));
+          setUrl(constraintThing, `${ODRL}leftOperand`, `${EX_BASE}timeWindow`);
+          setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
+          setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value));
         } else if (constraint.type === 'location') {
-          constraintThing = setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}spatial`);
-          constraintThing = setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
-          constraintThing = setStringNoLocale(constraintThing, `${ODRL}rightOperand`, String(constraint.value));
+          setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}spatial`);
+          setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
+          setStringNoLocale(constraintThing, `${ODRL}rightOperand`, String(constraint.value));
         }
         
-        permissionThing = setUrl(permissionThing, `${ODRL}assigner`, `${EX_BASE}pod-owner`);
-        permissionThing = setUrl(permissionThing, `${ODRL}assignee`, `${EX_BASE}any-app`);
-        permissionThing = setUrl(permissionThing, `${ODRL}action`, `${ODRL}read`);
-        permissionThing = setUrl(permissionThing, `${ODRL}constraint`, constraintThing.url);
-        policyThing = setUrl(policyThing, `${ODRL}permission`, permissionThing.url);
+        // Set permission properties
+        setUrl(permissionThing, `${ODRL}assigner`, `${EX_BASE}pod-owner`);
+        setUrl(permissionThing, `${ODRL}assignee`, `${EX_BASE}any-app`);
+        setUrl(permissionThing, `${ODRL}action`, `${ODRL}read`);
+        setUrl(permissionThing, `${ODRL}constraint`, constraintThing.url);
+        
+        // Set prohibition properties (as in your example)
+        setUrl(prohibitionThing, `${ODRL}assignee`, `${EX_BASE}any-app`);
+        setUrl(prohibitionThing, `${ODRL}action`, `${ODRL}distribute`);
+        
+        // Link permission and prohibition to policy
+        policyThing = addUrl(policyThing, `${ODRL}permission`, permissionThing.url);
+        policyThing = addUrl(policyThing, `${ODRL}prohibition`, prohibitionThing.url);
+        
+        // Add things to dataset (blank nodes will be serialized as _:b752_n3-x)
         dataset = setThing(dataset, constraintThing);
         dataset = setThing(dataset, permissionThing);
+        dataset = setThing(dataset, prohibitionThing);
       }
+      
       dataset = setThing(dataset, policyThing);
       await saveSolidDatasetAt(policyUrl, dataset, { fetch: session.fetch });
       
@@ -991,7 +1022,7 @@ export default function AuditDashboardPage() {
     });
   }, [logs, search, sensitivity, dateFilter, appFilter, decisionFilter]);
 
-  // LOGIC: Group violation logs by App for Summary Table
+  // ✅ LOGIC: Group violation logs by App for Summary Table
   const violationSummaryData = useMemo(() => {
     const violationLogs = filteredLogs.filter((l) => l.decision === 'VIOLATION' || l.violations.length > 0);
     const grouped: Record<string, AccessLogEntry[]> = {};
@@ -1337,7 +1368,7 @@ export default function AuditDashboardPage() {
         </Tabs>
       )}
 
-      {/* MODAL HISTORY / DETAIL */}
+      {/* MODAL HISTORY / DETAIL - FIXED: Clear Policy Identification */}
       <Modal isOpen={isDetailModalOpen} onClose={onDetailModalClose} size="4xl">
         <ModalOverlay />
         <ModalContent bg="white" color="gray.800">
@@ -1349,49 +1380,69 @@ export default function AuditDashboardPage() {
             {selectedAppHistory && (
               <VStack align="stretch" spacing={4}>
                 <Text fontSize="sm" color="gray.600">
-                  Showing detailed history of {selectedAppHistory.logs.length} violation(s) for this application.
+                  Showing detailed history of {selectedAppHistory.logs.length} violation event(s) for <strong>{selectedAppHistory.appName}</strong>.
                 </Text>
+                
+                {/* HISTORY TABLE - Each row = 1 violation event with clear policy */}
                 <Table variant="simple" size="sm">
                   <Thead bg="gray.50">
                     <Tr>
                       <Th>Time</Th>
-                      <Th>Violated Fields</Th>
-                      <Th>Policy Title</Th>
+                      <Th>Violated Policy</Th>
                       <Th>Policy Identifier</Th>
+                      <Th>Violated Fields</Th>
                       <Th>Details</Th>
                     </Tr>
                   </Thead>
                   <Tbody>
                     {selectedAppHistory.logs.map((log) => {
+                      // ✅ Get violated policy info - handle both explicit violations & fallback
                       let violatedPolicyId = 'unknown';
                       if (log.violations.length > 0) {
                         violatedPolicyId = log.violations[0].violatedPolicy;
                       } else if (log.fields.some(f => f.isSensitive)) {
-                        const firstSensitiveField = log.fields.find(f => f.isSensitive);
-                        if (firstSensitiveField) {
-                          violatedPolicyId = firstSensitiveField.fieldIri;
-                        }
+                        const firstSensitive = log.fields.find(f => f.isSensitive);
+                        if (firstSensitive) violatedPolicyId = firstSensitive.fieldIri;
                       }
                       
                       const matchedPolicy = findPolicyByViolation(violatedPolicyId);
                       const policyTitle = matchedPolicy ? matchedPolicy.title : 'Unknown Policy';
                       const policyIdentifier = matchedPolicy?.identifier || shortIri(violatedPolicyId);
                       
+                      // ✅ Get violated fields - show only fields related to this policy
                       let violatedFieldsText = 'General / No Fields';
                       if (log.violations.length > 0) {
-                        violatedFieldsText = log.violations.map(v => getFieldLabel(v.violatedField)).join(', ');
+                        violatedFieldsText = log.violations
+                          .map(v => getFieldLabel(v.violatedField))
+                          .join(', ');
                       } else if (log.fields.some(f => f.isSensitive)) {
-                        violatedFieldsText = log.fields.filter(f => f.isSensitive).map(f => f.fieldName).join(', ');
+                        violatedFieldsText = log.fields
+                          .filter(f => f.isSensitive)
+                          .map(f => f.fieldName)
+                          .join(', ');
                       }
                       
                       return (
-                        <Tr key={log.id}>
+                        <Tr key={log.id} bg="red.50" _hover={{ bg: 'red.100' }}>
                           <Td>{log.startedAt?.toLocaleString()}</Td>
-                          <Td>{violatedFieldsText}</Td>
-                          <Td><Text fontWeight="medium">{policyTitle}</Text></Td>
-                          <Td><Code fontSize="xs">{policyIdentifier}</Code></Td>
                           <Td>
-                            <Button size="xs" variant="outline" onClick={() => {}}>
+                            <Text fontWeight="medium" color="red.600">{policyTitle}</Text>
+                          </Td>
+                          <Td>
+                            <Code fontSize="xs" bg="gray.100">{policyIdentifier}</Code>
+                          </Td>
+                          <Td>{violatedFieldsText}</Td>
+                          <Td>
+                            <Button 
+                              size="xs" 
+                              variant="outline" 
+                              colorScheme="blue"
+                              onClick={() => {
+                                // Optional: Scroll to field breakdown section
+                                const element = document.getElementById(`fields-${log.id}`);
+                                if (element) element.scrollIntoView({ behavior: 'smooth' });
+                              }}
+                            >
                               View Fields
                             </Button>
                           </Td>
@@ -1400,31 +1451,99 @@ export default function AuditDashboardPage() {
                     })}
                   </Tbody>
                 </Table>
+                
                 <Divider />
+                
+                {/* DETAILED FIELD BREAKDOWN - Per Event */}
                 <Text fontWeight="bold" fontSize="md">Accessed Fields Breakdown</Text>
-                {selectedAppHistory.logs.map((log, idx) => (
-                  <Box key={log.id} p={4} border="1px solid" borderColor="gray.200" borderRadius="md">
-                    <Flex justify="space-between" mb={2}>
-                      <Text fontWeight="bold" fontSize="sm">Event #{idx + 1} - {log.startedAt?.toLocaleString()}</Text>
-                      <Badge colorScheme="red">VIOLATION</Badge>
-                    </Flex>
-                    <VStack align="stretch" spacing={2}>
-                      {log.fields.map((f) => (
-                        <Flex key={f.fieldIri} justify="space-between" bg="gray.50" p={2} borderRadius="sm">
+                <VStack align="stretch" spacing={3} maxH="400px" overflowY="auto" p={2}>
+                  {selectedAppHistory.logs.map((log, idx) => {
+                    // ✅ Determine which policy was violated for this log
+                    let violatedPolicyId = 'unknown';
+                    if (log.violations.length > 0) {
+                      violatedPolicyId = log.violations[0].violatedPolicy;
+                    } else if (log.fields.some(f => f.isSensitive)) {
+                      const firstSensitive = log.fields.find(f => f.isSensitive);
+                      if (firstSensitive) violatedPolicyId = firstSensitive.fieldIri;
+                    }
+                    
+                    const matchedPolicy = findPolicyByViolation(violatedPolicyId);
+                    const policyTitle = matchedPolicy ? matchedPolicy.title : 'Unknown Policy';
+                    
+                    return (
+                      <Box 
+                        key={log.id} 
+                        id={`fields-${log.id}`}
+                        p={4} 
+                        border="1px solid" 
+                        borderColor="gray.200" 
+                        borderRadius="md"
+                        bg="white"
+                      >
+                        {/* Event Header */}
+                        <Flex justify="space-between" align="center" mb={3} pb={2} borderBottom="1px dashed" borderColor="gray.200">
                           <Box>
-                            <Text fontSize="sm" fontWeight="medium">{f.fieldName}</Text>
-                            <Text fontSize="xs" color="gray.500">{shortIri(f.fieldIri)}</Text>
+                            <Text fontWeight="bold" fontSize="sm">Event #{idx + 1}</Text>
+                            <Text fontSize="xs" color="gray.600">{log.startedAt?.toLocaleString()}</Text>
                           </Box>
-                          <Box textAlign="right">
-                            <Text fontSize="sm" fontWeight="bold">{f.fieldValue}</Text>
-                            <Tag size="xs" colorScheme={f.isSensitive ? 'red' : 'gray'}>{f.isSensitive ? 'Sensitive' : 'Normal'}</Tag>
-                          </Box>
+                          <HStack spacing={2}>
+                            <Badge colorScheme="red">VIOLATION</Badge>
+                            <Badge colorScheme="purple" variant="outline">{policyTitle}</Badge>
+                          </HStack>
                         </Flex>
-                      ))}
-                      {log.fields.length === 0 && <Text fontSize="sm" color="gray.500" fontStyle="italic">No field details recorded.</Text>}
-                    </VStack>
-                  </Box>
-                ))}
+                        
+                        {/* Fields List */}
+                        <VStack align="stretch" spacing={2}>
+                          {log.fields.map((field) => {
+                            // ✅ Highlight fields that are related to the violated policy
+                            const isViolatedField = log.violations.some(v => 
+                              cleanIRI(v.violatedField) === cleanIRI(field.fieldIri)
+                            ) || (log.violations.length === 0 && field.isSensitive);
+                            
+                            return (
+                              <Flex 
+                                key={field.fieldIri} 
+                                justify="space-between" 
+                                align="center"
+                                p={2} 
+                                borderRadius="sm"
+                                bg={isViolatedField ? 'red.50' : 'gray.50'}
+                                borderLeft="4px solid"
+                                borderColor={isViolatedField ? 'red.400' : 'gray.300'}
+                              >
+                                <Box flex={1}>
+                                  <Flex align="center" gap={2}>
+                                    <Text fontSize="sm" fontWeight="medium">{field.fieldName}</Text>
+                                    {isViolatedField && (
+                                      <Badge size="xs" colorScheme="red" variant="solid">Violated</Badge>
+                                    )}
+                                  </Flex>
+                                  <Text fontSize="xs" color="gray.500">{shortIri(field.fieldIri)}</Text>
+                                </Box>
+                                <Box textAlign="right" minW="120px">
+                                  <Text fontSize="sm" fontWeight="bold" fontFamily="mono">{field.fieldValue || '—'}</Text>
+                                  <Tag 
+                                    size="xs" 
+                                    colorScheme={field.isSensitive ? 'red' : 'gray'}
+                                    variant={field.isSensitive ? 'solid' : 'outline'}
+                                    mt={1}
+                                  >
+                                    {field.isSensitive ? 'Sensitive' : 'Normal'}
+                                  </Tag>
+                                </Box>
+                              </Flex>
+                            );
+                          })}
+                          {log.fields.length === 0 && (
+                            <Text fontSize="sm" color="gray.500" fontStyle="italic" textAlign="center" py={4}>
+                              No field details recorded for this event.
+                            </Text>
+                          )}
+                        </VStack>
+                      </Box>
+                    );
+                  })}
+                </VStack>
               </VStack>
             )}
           </ModalBody>
