@@ -330,7 +330,9 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
     if (!types.some((t: string) => t.includes('Activity'))) return null;
     
     const decision = getStringNoLocaleAll(thing, `${FORCE}decision`)[0];
-    if (!decision) return null;
+    // Jika tidak ada decision, kita asumsikan ALLOWED atau abaikan. 
+    // Tapi untuk debugging, kita anggap null bukan VIOLATION.
+    if (!decision) return null; 
     
     const accessId = thing.url.split('#').pop() ?? thing.url;
     const startedAt = getDatetime(thing, `${PROV}startedAtTime`) ?? null;
@@ -407,10 +409,6 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
       });
     }
     
-    if (violations.length > 0) {
-      console.log('🔍 Found violations for access:', accessId, violations);
-    }
-    
     return {
       id: thing.url,
       accessId,
@@ -484,7 +482,7 @@ function parseStateOfTheWorld(thing: any, dataset: SolidDataset): StateOfTheWorl
 }
 
 /* ======================================================
-PARSE PRIVACY MAPPING - DPV STYLE
+PARSE PRIVACY MAPPING
 ====================================================== */
 function parsePrivacyMapping(thing: any): PrivacyMapping | null {
   try {
@@ -598,7 +596,7 @@ export default function AuditDashboardPage() {
         } catch (parseErr) { console.warn('Failed to parse entry:', parseErr); }
       });
       
-      console.log(`📊 Parsed ${parsed.length} entries, ${parsed.filter(l => l.violations.length > 0).length} with violations`);
+      console.log(`📊 Parsed ${parsed.length} entries, ${parsed.filter(l => l.decision === 'VIOLATION').length} marked as VIOLATION`);
       
       parsed.sort((a, b) => {
         if (!a.startedAt) return 1;
@@ -629,23 +627,19 @@ export default function AuditDashboardPage() {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
       const sotwUrl = `${podUrls[0]}${STATE_OF_WORLD_PATH}`;
       
-      // ✅ FIXED: Add explicit type annotation for TypeScript strict mode
       let dataset: SolidDataset;
       try {
         dataset = await getSolidDataset(sotwUrl, { fetch: session.fetch });
       } catch (error: any) {
-        // Jika 404, buat dataset baru dengan fallback data
         if (error?.status === 404) {
           console.log('📝 SOTW file not found, creating with fallback data...');
           dataset = createSolidDataset();
           
-          // Create fallback SOTW thing
           const sotwThing = createThing({ url: `${sotwUrl}#sotw-current` });
           let finalThing = setUrl(sotwThing, `${RDF}type`, `${SOTW}SotW`);
           finalThing = setDatetime(finalThing, `${SOTW}currentTime`, new Date());
           finalThing = setUrl(finalThing, `${SOTW}currentLocation`, 'https://www.iso.org/obp/ui/#iso:code:3166:ID');
           
-          // Add counts for known fields
           Object.entries(FIELD_LABELS).forEach(([iri]) => {
             const countThing = createThing({ url: `${sotwUrl}#count-${Date.now()}-${Math.random().toString(36).slice(2, 6)}` });
             let cThing = setUrl(countThing, `${RDF}type`, `${SOTW}Count`);
@@ -657,15 +651,13 @@ export default function AuditDashboardPage() {
           });
           
           dataset = setThing(dataset, finalThing);
-          // Save the new file immediately
           await saveSolidDatasetAt(sotwUrl, dataset, { fetch: session.fetch });
-          console.log('✅ Created new SOTW file with fallback data');
+          console.log('✅ Created new SOTW file');
         } else {
           throw error;
         }
       }
       
-      // Parse existing or newly created dataset
       let sotwEntry: StateOfTheWorld | null = null;
       getThingAll(dataset).forEach((thing: any) => {
         const parsed = parseStateOfTheWorld(thing, dataset);
@@ -676,7 +668,6 @@ export default function AuditDashboardPage() {
       
     } catch (err: any) {
       console.error('Failed to load SOTW:', err);
-      // Final fallback UI state
       setSotwData({
         id: 'fallback',
         currentTime: new Date(),
@@ -692,7 +683,7 @@ export default function AuditDashboardPage() {
     }
   };
 
-  useEffect(() => { loadStateOfTheWorld(); }, []);
+  useEffect(() => { loadStateOfTheWorld(); }, [session]);
 
   /* ========================= LOAD POLICIES ========================= */
   const loadPolicies = async () => {
@@ -756,7 +747,7 @@ export default function AuditDashboardPage() {
     }
   };
 
-  useEffect(() => { loadPolicies(); }, []);
+  useEffect(() => { loadPolicies(); }, [session]);
 
   /* ========================= LOAD PRIVACY MAPPINGS ========================= */
   const loadPrivacyMappings = async () => {
@@ -780,7 +771,6 @@ export default function AuditDashboardPage() {
         console.log('Privacy mapping file not found. Will create on save.');
       }
       
-      // Merge saved mappings with FIELD_LABELS definitions
       const savedMap = new Map(savedMappings.map(m => [cleanIRI(m.fieldIri), m]));
       
       const finalMappings: PrivacyMapping[] = Object.entries(FIELD_LABELS).map(([iri, label]) => {
@@ -797,7 +787,6 @@ export default function AuditDashboardPage() {
         };
       });
       
-      // Add any custom fields not in FIELD_LABELS
       savedMappings.forEach(saved => {
         if (!finalMappings.find(m => cleanIRI(m.fieldIri) === cleanIRI(saved.fieldIri))) {
           finalMappings.push(saved);
@@ -814,7 +803,7 @@ export default function AuditDashboardPage() {
     }
   };
 
-  useEffect(() => { loadPrivacyMappings(); }, []);
+  useEffect(() => { loadPrivacyMappings(); }, [session]);
 
   /* ========================= SAVE POLICY ========================= */
   const savePolicy = async (policy: Policy) => {
@@ -887,7 +876,6 @@ export default function AuditDashboardPage() {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
       const mappingUrl = `${podUrls[0]}${PRIVACY_MAPPING_PATH}`;
       
-      // ✅ FIXED: Add explicit type annotation for TypeScript strict mode
       let dataset: SolidDataset;
       try {
         dataset = await getSolidDataset(mappingUrl, { fetch: session.fetch });
@@ -896,19 +884,14 @@ export default function AuditDashboardPage() {
       }
       
       privacyMappings.forEach((mapping) => {
-        // FIXED: Use subject-based URL (ex:name, ex:age) instead of #mapping-${idx}
         const shortName = schemaToExShort(mapping.fieldIri);
-        const subjectUrl = `${EX}${shortName}`; // e.g., https://example.org/privacy#name
+        const subjectUrl = `${EX}${shortName}`;
         
-        // Check if thing with this URL already exists
         let thing = getThingAll(dataset).find((t: any) => cleanIRI(t.url) === cleanIRI(subjectUrl));
-        
-        // If not exists, create new
         if (!thing) {
           thing = createThing({ url: subjectUrl });
         }
         
-        // Update/Set properties
         thing = setUrl(thing, `${RDF}type`, `${DPV}PersonalData`);
         thing = setStringNoLocale(thing, `${SKOS}prefLabel`, mapping.fieldLabel);
         thing = setUrl(thing, `${DPV}hasPersonalData`, mapping.personalDataType);
@@ -923,7 +906,7 @@ export default function AuditDashboardPage() {
       await saveSolidDatasetAt(mappingUrl, dataset, { fetch: session.fetch });
       
       toast({ title: 'Success', description: 'Privacy settings saved', status: 'success' });
-      await loadPrivacyMappings(); // Reload to confirm save
+      await loadPrivacyMappings(); 
       onPrivacyModalClose();
       
     } catch (err: any) {
@@ -970,7 +953,12 @@ export default function AuditDashboardPage() {
     });
   }, [logs, search, sensitivity, dateFilter, appFilter, decisionFilter]);
 
-  const violationLogs = useMemo(() => filteredLogs.filter((l) => l.violations.length > 0), [filteredLogs]);
+  // ✅ FIXED: Ambil log jika punya detail violation ATAU jika statusnya VIOLATION (meski detail kosong)
+  const violationLogs = useMemo(() => 
+    filteredLogs.filter((l) => l.violations.length > 0 || l.decision === 'VIOLATION'), 
+    [filteredLogs]
+  );
+
   const totalPages = Math.ceil(violationLogs.length / rowsPerPage);
   const currentViolationLogs = useMemo(() => {
     const start = (currentPage - 1) * rowsPerPage;
@@ -981,19 +969,14 @@ export default function AuditDashboardPage() {
     if (newPage >= 1 && newPage <= totalPages) setCurrentPage(newPage);
   };
 
-  // FIXED: Helper function to match violatedPolicy (IRI) with policy.targetIRI
   const findPolicyByViolation = (violatedPolicyIri: string): Policy | undefined => {
     const cleanViolated = cleanIRI(violatedPolicyIri);
-    
-    // 1. Exact ID match
     const exact = policies.find(p => p.id === cleanViolated || p.id === violatedPolicyIri);
     if (exact) return exact;
     
-    // 2. Match by targetIRI (MOST IMPORTANT)
     const byTarget = policies.find(p => cleanIRI(p.targetIRI || '') === cleanViolated);
     if (byTarget) return byTarget;
     
-    // 3. Match by targetField short name
     const shortName = shortIri(cleanViolated);
     const byShort = policies.find(p => p.targetField === shortName);
     if (byShort) return byShort;
@@ -1113,7 +1096,7 @@ export default function AuditDashboardPage() {
             <Tab>State of the World</Tab>
           </TabList>
           <TabPanels>
-            {/* TAB 1: VIOLATION REPORT - FIXED WITH FALLBACK */}
+            {/* TAB 1: VIOLATION REPORT - CRITICAL FIX APPLIED HERE */}
             <TabPanel>
               <Card>
                 <CardHeader>
@@ -1133,56 +1116,66 @@ export default function AuditDashboardPage() {
                     </Thead>
                     <Tbody>
                       {currentViolationLogs.length > 0 ? (
-                        currentViolationLogs.map((log) =>
-                          // CASE 1: Log has explicit violations from bundle
-                          log.violations.length > 0 ? (
-                            log.violations.map((v, idx) => {
-                              const matchedPolicy = findPolicyByViolation(v.violatedPolicy);
-                              const policyTitle = matchedPolicy ? matchedPolicy.title : 'Unknown Policy';
-                              const policyIdDisplay = matchedPolicy ? shortIri(matchedPolicy.id) : shortIri(v.violatedPolicy);
-                              
-                              return (
-                                <Tr key={`${log.accessId}-${v.violatedField}-${idx}`} bg="red.50" cursor="pointer" _hover={{ bg: 'red.100' }} onClick={() => { setSelectedLog(log); onDetailModalOpen(); }}>
+                        currentViolationLogs.map((log) => (
+                          <>
+                            {/* CASE 1: Explicit Violation Details exist */}
+                            {log.violations.length > 0 ? (
+                              log.violations.map((v, idx) => {
+                                const matchedPolicy = findPolicyByViolation(v.violatedPolicy);
+                                const policyTitle = matchedPolicy ? matchedPolicy.title : 'Unknown Policy';
+                                const policyIdDisplay = matchedPolicy ? shortIri(matchedPolicy.id) : shortIri(v.violatedPolicy);
+                                
+                                return (
+                                  <Tr key={`${log.accessId}-exp-${idx}`} bg="red.50" cursor="pointer" _hover={{ bg: 'red.100' }} onClick={() => { setSelectedLog(log); onDetailModalOpen(); }}>
+                                    <Td>{log.startedAt?.toLocaleString()}</Td>
+                                    <Td textTransform="capitalize">{log.app}</Td>
+                                    <Td>{getFieldLabel(v.violatedField)}</Td>
+                                    <Td fontWeight="medium">{policyTitle}</Td>
+                                    <Td><Code fontSize="xs">{policyIdDisplay}</Code></Td>
+                                  </Tr>
+                                );
+                              })
+                            ) : (
+                              /* CASE 2: Fallback - Decision is VIOLATION but no explicit bundle details */
+                              /* We list the fields accessed in this log as the potential violations */
+                              log.fields.length > 0 ? (
+                                log.fields.map((field, idx) => {
+                                  const matchedPolicy = policies.find(p => 
+                                    cleanIRI(p.targetIRI || '') === cleanIRI(field.fieldIri) || 
+                                    p.targetField === shortIri(field.fieldIri)
+                                  );
+                                  const policyTitle = matchedPolicy ? matchedPolicy.title : (field.isSensitive ? 'Sensitive Data Policy' : 'General Policy');
+                                  const policyIdDisplay = matchedPolicy ? shortIri(matchedPolicy.id) : shortIri(field.fieldIri);
+                                  
+                                  return (
+                                    <Tr key={`${log.accessId}-fb-${idx}`} bg="orange.50" cursor="pointer" _hover={{ bg: 'orange.100' }} onClick={() => { setSelectedLog(log); onDetailModalOpen(); }}>
+                                      <Td>{log.startedAt?.toLocaleString()}</Td>
+                                      <Td textTransform="capitalize">{log.app}</Td>
+                                      <Td>{getFieldLabel(field.fieldIri)}</Td>
+                                      <Td fontWeight="medium" color="orange.700">{policyTitle} (Inferred)</Td>
+                                      <Td><Code fontSize="xs">{policyIdDisplay}</Code></Td>
+                                    </Tr>
+                                  );
+                                })
+                              ) : (
+                                /* CASE 3: No fields available either */
+                                <Tr key={`${log.accessId}-gen`} bg="gray.50">
                                   <Td>{log.startedAt?.toLocaleString()}</Td>
                                   <Td textTransform="capitalize">{log.app}</Td>
-                                  <Td>{getFieldLabel(v.violatedField)}</Td>
-                                  <Td fontWeight="medium">{policyTitle}</Td>
-                                  <Td><Code fontSize="xs">{policyIdDisplay}</Code></Td>
+                                  <Td colSpan={3}>General Violation (No field details available)</Td>
                                 </Tr>
-                              );
-                            })
-                          ) : 
-                          // CASE 2: Fallback - decision is VIOLATION but no explicit bundle, show sensitive fields as violations
-                          log.decision === 'VIOLATION' && log.fields.some(f => f.isSensitive) ? (
-                            log.fields.filter(f => f.isSensitive).map((field, idx) => {
-                              // Try to find matching policy by field IRI
-                              const matchedPolicy = policies.find(p => 
-                                cleanIRI(p.targetIRI || '') === cleanIRI(field.fieldIri) || 
-                                p.targetField === shortIri(field.fieldIri)
-                              );
-                              const policyTitle = matchedPolicy ? matchedPolicy.title : 'Sensitive Data Policy';
-                              const policyIdDisplay = matchedPolicy ? shortIri(matchedPolicy.id) : shortIri(field.fieldIri);
-                              
-                              return (
-                                <Tr key={`${log.accessId}-${field.fieldIri}-${idx}`} bg="red.50" cursor="pointer" _hover={{ bg: 'red.100' }} onClick={() => { setSelectedLog(log); onDetailModalOpen(); }}>
-                                  <Td>{log.startedAt?.toLocaleString()}</Td>
-                                  <Td textTransform="capitalize">{log.app}</Td>
-                                  <Td>{getFieldLabel(field.fieldIri)}</Td>
-                                  <Td fontWeight="medium">{policyTitle}</Td>
-                                  <Td><Code fontSize="xs">{policyIdDisplay}</Code></Td>
-                                </Tr>
-                              );
-                            })
-                          ) : null
-                        )
+                              )
+                            )}
+                          </>
+                        ))
                       ) : (
                         <Tr>
                           <Td colSpan={5} textAlign="center">
                             {logs.filter(l => l.decision === 'VIOLATION').length > 0 ? (
                               <>
-                                <Text>Violations exist but may be filtered out or lack explicit violation details.</Text>
+                                <Text>Violations exist but may be filtered out.</Text>
                                 <Button size="xs" mt={2} onClick={() => { setDecisionFilter('all'); setDateFilter('all'); setSensitivity('all'); setAppFilter('all'); setSearch(''); }}>
-                                  Clear filters to show all
+                                  Clear filters
                                 </Button>
                               </>
                             ) : (
