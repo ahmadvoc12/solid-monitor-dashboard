@@ -901,8 +901,8 @@ export default function AuditDashboardPage() {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
       const mappingUrl = `${podUrls[0]}${PRIVACY_MAPPING_PATH}`;
       
-      // Load existing dataset first (for update, not create new)
-      let dataset;
+      // ✅ FIXED: Add explicit type annotation for TypeScript strict mode
+      let dataset: SolidDataset;
       try {
         dataset = await getSolidDataset(mappingUrl, { fetch: session.fetch });
       } catch {
