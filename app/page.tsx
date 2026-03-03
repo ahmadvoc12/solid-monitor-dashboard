@@ -330,7 +330,7 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
     if (!types.some((t: string) => t.includes('Activity'))) return null;
     
     const decision = getStringNoLocaleAll(thing, `${FORCE}decision`)[0];
-    if (!decision) return null; 
+    if (!decision) return null;
     
     const accessId = thing.url.split('#').pop() ?? thing.url;
     const startedAt = getDatetime(thing, `${PROV}startedAtTime`) ?? null;
@@ -405,6 +405,10 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
           }
         });
       });
+    }
+    
+    if (violations.length > 0) {
+      console.log('🔍 Found violations for access:', accessId, violations);
     }
     
     return {
@@ -906,7 +910,7 @@ export default function AuditDashboardPage() {
       await saveSolidDatasetAt(mappingUrl, dataset, { fetch: session.fetch });
       
       toast({ title: 'Success', description: 'Privacy settings saved', status: 'success' });
-      await loadPrivacyMappings(); 
+      await loadPrivacyMappings();
       onPrivacyModalClose();
       
     } catch (err: any) {
@@ -953,40 +957,33 @@ export default function AuditDashboardPage() {
     });
   }, [logs, search, sensitivity, dateFilter, appFilter, decisionFilter]);
 
-  // ✅ LOGIC: Group violation logs by App for Summary Table
+  // LOGIC: Group violation logs by App for Summary Table
   const violationSummaryData = useMemo(() => {
-    // 1. Filter only violation logs
     const violationLogs = filteredLogs.filter((l) => l.decision === 'VIOLATION' || l.violations.length > 0);
-    
     const grouped: Record<string, AccessLogEntry[]> = {};
-
-    // 2. Group by App Name
+    
     violationLogs.forEach(log => {
       if (!grouped[log.app]) {
         grouped[log.app] = [];
       }
       grouped[log.app].push(log);
     });
-
-    // 3. Transform to Summary Array
+    
     return Object.keys(grouped).map(appName => {
       const appLogs = grouped[appName];
-      // Sort logs by time descending (newest first)
       appLogs.sort((a, b) => {
         const timeA = a.startedAt ? a.startedAt.getTime() : 0;
         const timeB = b.startedAt ? b.startedAt.getTime() : 0;
         return timeB - timeA;
       });
-
       const latestLog = appLogs[0];
       const violatedPolicyId = latestLog.violations.length > 0 ? latestLog.violations[0].violatedPolicy : 'unknown';
-      
       return {
         appName,
         count: appLogs.length,
         latestTime: latestLog.startedAt,
         violatedPolicyId,
-        logs: appLogs // Keep logs for modal
+        logs: appLogs
       };
     });
   }, [filteredLogs]);
@@ -1015,6 +1012,7 @@ export default function AuditDashboardPage() {
 
   const findPolicyByViolation = (violatedPolicyIri: string): Policy | undefined => {
     const cleanViolated = cleanIRI(violatedPolicyIri);
+    
     const exact = policies.find(p => p.id === cleanViolated || p.id === violatedPolicyIri);
     if (exact) return exact;
     
@@ -1167,7 +1165,6 @@ export default function AuditDashboardPage() {
                         currentSummaryData.map((item) => {
                           const matchedPolicy = findPolicyByViolation(item.violatedPolicyId);
                           const policyTitle = matchedPolicy ? matchedPolicy.title : 'Unknown Policy';
-
                           return (
                             <Tr key={item.appName} bg="red.50" _hover={{ bg: 'red.100' }} cursor="pointer">
                               <Td fontWeight="bold" textTransform="capitalize">{item.appName}</Td>
@@ -1177,9 +1174,9 @@ export default function AuditDashboardPage() {
                               <Td>{item.latestTime?.toLocaleString()}</Td>
                               <Td>{policyTitle}</Td>
                               <Td>
-                                <Button 
-                                  size="xs" 
-                                  colorScheme="blue" 
+                                <Button
+                                  size="xs"
+                                  colorScheme="blue"
                                   onClick={() => handleViewHistory(item.appName)}
                                 >
                                   View History
@@ -1223,8 +1220,8 @@ export default function AuditDashboardPage() {
                 <CardHeader>
                   <Flex justify="space-between" align="center">
                     <VStack align="start" spacing={1}>
-                       <Text fontWeight="bold">State of the World (SOTW)</Text>
-                       {sotwData && <Text fontSize="sm" color="gray.500">ID: ex:sotw-current</Text>}
+                      <Text fontWeight="bold">State of the World (SOTW)</Text>
+                      {sotwData && <Text fontSize="sm" color="gray.500">ID: ex:sotw-current</Text>}
                     </VStack>
                     <Button size="sm" colorScheme="blue" onClick={loadStateOfTheWorld} isLoading={loadingSotw}>Refresh</Button>
                   </Flex>
@@ -1242,30 +1239,28 @@ export default function AuditDashboardPage() {
                           <Tag size="sm" colorScheme="purple">{shortIri(sotwData.currentLocation)}</Tag>
                         </Box>
                       </Flex>
-                      
                       <Divider />
                       <Text fontWeight="medium">Access Counts</Text>
-                      
                       <Table variant="simple" size="sm">
                         <Thead>
-                           <Tr>
-                             <Th>Field Name</Th>
-                             <Th>Count Value</Th>
-                             <Th>Target IRI</Th>
-                           </Tr>
+                          <Tr>
+                            <Th>Field Name</Th>
+                            <Th>Count Value</Th>
+                            <Th>Target IRI</Th>
+                          </Tr>
                         </Thead>
                         <Tbody>
-                           {sotwData.counts.map((count) => (
-                             <Tr key={count.targetIRI}>
-                               <Td fontWeight="medium">{getFieldLabel(count.targetIRI)}</Td>
-                               <Td>
-                                 <Badge colorScheme={count.countValue > 0 ? 'red' : 'gray'}>
-                                   {count.countValue}
-                                 </Badge>
-                               </Td>
-                               <Td><Code fontSize="xs">{shortIri(count.targetIRI)}</Code></Td>
-                             </Tr>
-                           ))}
+                          {sotwData.counts.map((count) => (
+                            <Tr key={count.targetIRI}>
+                              <Td fontWeight="medium">{getFieldLabel(count.targetIRI)}</Td>
+                              <Td>
+                                <Badge colorScheme={count.countValue > 0 ? 'red' : 'gray'}>
+                                  {count.countValue}
+                                </Badge>
+                              </Td>
+                              <Td><Code fontSize="xs">{shortIri(count.targetIRI)}</Code></Td>
+                            </Tr>
+                          ))}
                         </Tbody>
                       </Table>
                       {sotwData.counts.length === 0 && <Alert status="info"><AlertIcon />No count data available.</Alert>}
@@ -1278,7 +1273,7 @@ export default function AuditDashboardPage() {
         </Tabs>
       )}
 
-      {/* MODAL HISTORY / DETAIL - WHITE BACKGROUND */}
+      {/* MODAL HISTORY / DETAIL */}
       <Modal isOpen={isDetailModalOpen} onClose={onDetailModalClose} size="4xl">
         <ModalOverlay />
         <ModalContent bg="white" color="gray.800">
@@ -1292,7 +1287,6 @@ export default function AuditDashboardPage() {
                 <Text fontSize="sm" color="gray.600">
                   Showing detailed history of {selectedAppHistory.logs.length} violation(s) for this application.
                 </Text>
-
                 {/* HISTORY TABLE INSIDE MODAL */}
                 <Table variant="simple" size="sm">
                   <Thead bg="gray.50">
@@ -1308,51 +1302,47 @@ export default function AuditDashboardPage() {
                       <Tr key={log.id}>
                         <Td>{log.startedAt?.toLocaleString()}</Td>
                         <Td>
-                          {log.violations.length > 0 
+                          {log.violations.length > 0
                             ? log.violations.map(v => getFieldLabel(v.violatedField)).join(', ')
                             : 'General / No Fields'
                           }
                         </Td>
                         <Td>
-                           {log.violations.length > 0 && log.violations[0].violatedPolicy ? (
-                              <Text fontWeight="medium">
-                                {findPolicyByViolation(log.violations[0].violatedPolicy)?.title || shortIri(log.violations[0].violatedPolicy)}
-                              </Text>
-                           ) : 'Unknown'}
+                          {log.violations.length > 0 && log.violations[0].violatedPolicy ? (
+                            <Text fontWeight="medium">
+                              {findPolicyByViolation(log.violations[0].violatedPolicy)?.title || shortIri(log.violations[0].violatedPolicy)}
+                            </Text>
+                          ) : 'Unknown'}
                         </Td>
                         <Td>
-                           <Button size="xs" variant="outline" onClick={() => {
-                             // Optional: Add logic to show specific row detail if needed, 
-                             // currently we show summary in columns
-                           }}>
-                             View Fields
-                           </Button>
+                          <Button size="xs" variant="outline" onClick={() => {}}>
+                            View Fields
+                          </Button>
                         </Td>
                       </Tr>
                     ))}
                   </Tbody>
                 </Table>
-
                 {/* DETAILED FIELD LIST (Inline) */}
                 <Divider />
                 <Text fontWeight="bold" fontSize="md">Accessed Fields Breakdown</Text>
                 {selectedAppHistory.logs.map((log, idx) => (
                   <Box key={log.id} p={4} border="1px solid" borderColor="gray.200" borderRadius="md">
                     <Flex justify="space-between" mb={2}>
-                        <Text fontWeight="bold" fontSize="sm">Event #{idx + 1} - {log.startedAt?.toLocaleString()}</Text>
-                        <Badge colorScheme="red">VIOLATION</Badge>
+                      <Text fontWeight="bold" fontSize="sm">Event #{idx + 1} - {log.startedAt?.toLocaleString()}</Text>
+                      <Badge colorScheme="red">VIOLATION</Badge>
                     </Flex>
                     <VStack align="stretch" spacing={2}>
                       {log.fields.map((f) => (
                         <Flex key={f.fieldIri} justify="space-between" bg="gray.50" p={2} borderRadius="sm">
-                           <Box>
-                             <Text fontSize="sm" fontWeight="medium">{f.fieldName}</Text>
-                             <Text fontSize="xs" color="gray.500">{shortIri(f.fieldIri)}</Text>
-                           </Box>
-                           <Box textAlign="right">
-                             <Text fontSize="sm" fontWeight="bold">{f.fieldValue}</Text>
-                             <Tag size="xs" colorScheme={f.isSensitive ? 'red' : 'gray'}>{f.isSensitive ? 'Sensitive' : 'Normal'}</Tag>
-                           </Box>
+                          <Box>
+                            <Text fontSize="sm" fontWeight="medium">{f.fieldName}</Text>
+                            <Text fontSize="xs" color="gray.500">{shortIri(f.fieldIri)}</Text>
+                          </Box>
+                          <Box textAlign="right">
+                            <Text fontSize="sm" fontWeight="bold">{f.fieldValue}</Text>
+                            <Tag size="xs" colorScheme={f.isSensitive ? 'red' : 'gray'}>{f.isSensitive ? 'Sensitive' : 'Normal'}</Tag>
+                          </Box>
                         </Flex>
                       ))}
                       {log.fields.length === 0 && <Text fontSize="sm" color="gray.500" fontStyle="italic">No field details recorded.</Text>}
@@ -1422,6 +1412,7 @@ export default function AuditDashboardPage() {
               </AccordionItem>
             </Accordion>
             <Box mt={6}>
+              {/* ✅ FIX: mb={3} not mb={3" */}
               <Text fontWeight="bold" mb={3}>Existing Policies</Text>
               {loadingPolicies ? <Spinner /> : (
                 <Table variant="simple" size="sm">
