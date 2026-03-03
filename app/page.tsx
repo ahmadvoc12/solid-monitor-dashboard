@@ -823,73 +823,97 @@ export default function AuditDashboardPage() {
   useEffect(() => { loadPrivacyMappings(); }, [session]);
 
   /* ========================= SAVE POLICY ========================= */
-  const savePolicy = async (policy: Policy) => {
-    if (!session?.info?.webId) return;
-    try {
-      const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
-      const policyUrl = `${podUrls[0]}${POLICY_PATH}`;
-      let dataset;
-      try { dataset = await getSolidDataset(policyUrl, { fetch: session.fetch }); } catch { dataset = createSolidDataset(); }
-      
-      let policyThing: ThingPersisted;
-      if (policy.id.startsWith('http')) {
-        const existingThing = getThingAll(dataset).find((t) => t.url === policy.id);
-        policyThing = existingThing ?? createThing({ url: policy.id });
-      } else {
-        policyThing = createThing({ url: `${podUrls[0]}${POLICY_PATH}#${policy.id}` });
-      }
-      
-      const fullTargetIri = Object.keys(FIELD_LABELS).find(iri => shortIri(cleanIRI(iri)) === policy.targetField) || policy.targetField;
-      policyThing = setUrl(policyThing, `${RDF}type`, `${ODRL}Policy`);
-      policyThing = setStringNoLocale(policyThing, `${DCT}title`, policy.title);
-      policyThing = setStringNoLocale(policyThing, `${DCT}description`, policy.description || '');
-      
-      if (policy.identifier) {
-        policyThing = setStringNoLocale(policyThing, `${DCT}identifier`, policy.identifier);
-      }
-      
-      policyThing = setDatetime(policyThing, `${DCT}created`, policy.createdAt || new Date());
-      policyThing = setUrl(policyThing, `${ODRL}target`, fullTargetIri);
-      policyThing = setBoolean(policyThing, `${FORCE}policyActive`, policy.active);
-      
-      const constraint = policy.constraints[0];
-      if (constraint) {
-        let constraintThing = createThing({ url: `${policyThing.url}#constraint-${Date.now()}` });
-        let permissionThing = createThing({ url: `${policyThing.url}#permission-${Date.now()}` });
-        
-        if (constraint.type === 'count') {
-          constraintThing = setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}count`);
-          constraintThing = setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
-          constraintThing = setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value));
-        } else if (constraint.type === 'timeWindow') {
-          constraintThing = setUrl(constraintThing, `${ODRL}leftOperand`, `${EX_BASE}timeWindow`);
-          constraintThing = setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
-          constraintThing = setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value));
-        } else if (constraint.type === 'location') {
-          constraintThing = setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}spatial`);
-          constraintThing = setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
-          constraintThing = setStringNoLocale(constraintThing, `${ODRL}rightOperand`, String(constraint.value));
-        }
-        
-        permissionThing = setUrl(permissionThing, `${ODRL}assigner`, `${EX_BASE}pod-owner`);
-        permissionThing = setUrl(permissionThing, `${ODRL}assignee`, `${EX_BASE}any-app`);
-        permissionThing = setUrl(permissionThing, `${ODRL}action`, `${ODRL}read`);
-        permissionThing = setUrl(permissionThing, `${ODRL}constraint`, constraintThing.url);
-        policyThing = setUrl(policyThing, `${ODRL}permission`, permissionThing.url);
-        dataset = setThing(dataset, constraintThing);
-        dataset = setThing(dataset, permissionThing);
-      }
-      dataset = setThing(dataset, policyThing);
-      await saveSolidDatasetAt(policyUrl, dataset, { fetch: session.fetch });
-      
-      toast({ title: 'Policy saved', description: `${policy.title} updated`, status: 'success' });
-      await loadPolicies();
-    } catch (err) {
-      console.error('Failed to save policy:', err);
-      toast({ title: 'Failed to save policy', status: 'error' });
-      throw err;
+/* ========================= SAVE POLICY - FIXED FORMAT ========================= */
+const savePolicy = async (policy: Policy) => {
+  if (!session?.info?.webId) return;
+  try {
+    const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
+    const policyUrl = `${podUrls[0]}${POLICY_PATH}`;
+    let dataset;
+    try { dataset = await getSolidDataset(policyUrl, { fetch: session.fetch }); } catch { dataset = createSolidDataset(); }
+    
+    // ✅ Generate clean, human-readable subject URL (ex:policy-bloodtype-xxxx)
+    const targetShort = policy.targetField.replace(/[^a-z0-9]/gi, '-').toLowerCase();
+    const hash = Math.random().toString(36).slice(2, 10);
+    const policySubjectUrl = `${EX_BASE}policy-${targetShort}-${hash}`;
+    
+    let policyThing = createThing({ url: policySubjectUrl });
+    
+    // ✅ Set core policy properties
+    policyThing = setUrl(policyThing, `${RDF}type`, `${ODRL}Policy`);
+    
+    // ✅ Add dct:identifier if provided (for matching with violations)
+    if (policy.identifier) {
+      policyThing = setStringNoLocale(policyThing, `${DCT}identifier`, policy.identifier);
     }
-  };
+    
+    policyThing = setStringNoLocale(policyThing, `${DCT}title`, policy.title);
+    policyThing = setStringNoLocale(policyThing, `${DCT}description`, policy.description || '');
+    
+    // ✅ Format timestamp without milliseconds: "2026-02-13T09:00:00Z"
+    const createdDate = policy.createdAt || new Date();
+    const timestamp = createdDate.toISOString().replace(/\.\d{3}Z$/, 'Z');
+    policyThing = setDatetime(policyThing, `${DCT}created`, new Date(timestamp));
+    
+    // ✅ Add dct:creator
+    policyThing = setUrl(policyThing, `${DCT}creator`, `${EX_BASE}pod-owner`);
+    
+    // ✅ Add odrl:profile
+    policyThing = setUrl(policyThing, `${ODRL}profile`, 'https://w3id.org/dpv/odrl');
+    
+    // Set target
+    const fullTargetIri = Object.keys(FIELD_LABELS).find(iri => shortIri(cleanIRI(iri)) === policy.targetField) || policy.targetField;
+    policyThing = setUrl(policyThing, `${ODRL}target`, fullTargetIri);
+    policyThing = setBoolean(policyThing, `${FORCE}policyActive`, policy.active);
+    
+    const constraint = policy.constraints[0];
+    if (constraint) {
+      // ✅ Use blank nodes for constraint and permission (with _: prefix)
+      const constraintBlankId = `_:constraint-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      const permissionBlankId = `_:permission-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      
+      const constraintThing = createThing({ url: constraintBlankId });
+      const permissionThing = createThing({ url: permissionBlankId });
+      
+      if (constraint.type === 'count') {
+        setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}count`);
+        setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
+        setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value));
+      } else if (constraint.type === 'timeWindow') {
+        setUrl(constraintThing, `${ODRL}leftOperand`, `${EX_BASE}timeWindow`);
+        setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
+        setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value));
+      } else if (constraint.type === 'location') {
+        setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}spatial`);
+        setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
+        setStringNoLocale(constraintThing, `${ODRL}rightOperand`, String(constraint.value));
+      }
+      
+      // Set permission properties
+      setUrl(permissionThing, `${ODRL}assigner`, `${EX_BASE}pod-owner`);
+      setUrl(permissionThing, `${ODRL}assignee`, `${EX_BASE}any-app`);
+      setUrl(permissionThing, `${ODRL}action`, `${ODRL}read`);
+      setUrl(permissionThing, `${ODRL}constraint`, constraintThing.url);
+      
+      // Link permission to policy
+      policyThing = setUrl(policyThing, `${ODRL}permission`, permissionThing.url);
+      
+      // Add things to dataset (blank nodes will be serialized as _:n3-x)
+      dataset = setThing(dataset, constraintThing);
+      dataset = setThing(dataset, permissionThing);
+    }
+    
+    dataset = setThing(dataset, policyThing);
+    await saveSolidDatasetAt(policyUrl, dataset, { fetch: session.fetch });
+    
+    toast({ title: 'Policy saved', description: `${policy.title} updated`, status: 'success' });
+    await loadPolicies();
+  } catch (err) {
+    console.error('Failed to save policy:', err);
+    toast({ title: 'Failed to save policy', status: 'error' });
+    throw err;
+  }
+};
 
   /* ========================= SAVE PRIVACY MAPPINGS ========================= */
   const savePrivacyMappings = async () => {
