@@ -183,6 +183,20 @@ function isWithinDays(date: Date | null, days: number) {
   return diff <= days * 24 * 60 * 60 * 1000;
 }
 
+// ✅ Generate UUID v4 format: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx
+function generateUUID(): string {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
+
+// ✅ Generate dct:identifier in URN UUID format
+function generatePolicyIdentifier(): string {
+  return `urn:uuid:${generateUUID()}`;
+}
+
 function generatePolicyId() {
   return `policy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -288,10 +302,10 @@ type PolicyConstraint = {
   unit?: 'hours' | 'days' | 'km';
 };
 
-// ✅ UPDATED: Added identifier field for dct:identifier matching
+// ✅ UPDATED: identifier is auto-generated, not user-input
 type Policy = {
   id: string;
-  identifier?: string;
+  identifier?: string; // ✅ Auto-generated as urn:uuid:...
   title: string;
   description: string;
   targetField: string;
@@ -410,7 +424,7 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
     }
     
     if (violations.length > 0) {
-      console.log('🔍 Found explicit violations for access:', accessId, violations);
+      console.log('🔍 Found violations for access:', accessId, violations);
     }
     
     return {
@@ -741,7 +755,7 @@ export default function AuditDashboardPage() {
         
         parsed.push({
           id: thing.url,
-          identifier,
+          identifier, // ✅ Load identifier from TTL
           title,
           description,
           targetField: shortIri(target),
@@ -756,8 +770,8 @@ export default function AuditDashboardPage() {
     } catch (err) {
       console.error('Failed to load policies:', err);
       setPolicies([
-        { id: 'default-bloodtype', identifier: 'urn:uuid:bloodtype-001', title: 'Blood Type Access Limit', description: 'Limit bloodType access to 1 per session', targetField: 'bloodType', targetIRI: 'https://schema.org/bloodType', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 1 }] },
-        { id: 'default-identity', identifier: 'urn:uuid:identity-001', title: 'Identity Access Limit', description: 'Limit identifier access to 3 per session', targetField: 'identifier', targetIRI: 'https://schema.org/identifier', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 3 }] },
+        { id: 'default-bloodtype', identifier: generatePolicyIdentifier(), title: 'Blood Type Access Limit', description: 'Limit bloodType access to 1 per session', targetField: 'bloodType', targetIRI: 'https://schema.org/bloodType', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 1 }] },
+        { id: 'default-identity', identifier: generatePolicyIdentifier(), title: 'Identity Access Limit', description: 'Limit identifier access to 3 per session', targetField: 'identifier', targetIRI: 'https://schema.org/identifier', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 3 }] },
       ]);
     } finally {
       setLoadingPolicies(false);
@@ -822,98 +836,76 @@ export default function AuditDashboardPage() {
 
   useEffect(() => { loadPrivacyMappings(); }, [session]);
 
-  /* ========================= SAVE POLICY ========================= */
-/* ========================= SAVE POLICY - FIXED FORMAT ========================= */
-const savePolicy = async (policy: Policy) => {
-  if (!session?.info?.webId) return;
-  try {
-    const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
-    const policyUrl = `${podUrls[0]}${POLICY_PATH}`;
-    let dataset;
-    try { dataset = await getSolidDataset(policyUrl, { fetch: session.fetch }); } catch { dataset = createSolidDataset(); }
-    
-    // ✅ Generate clean, human-readable subject URL (ex:policy-bloodtype-xxxx)
-    const targetShort = policy.targetField.replace(/[^a-z0-9]/gi, '-').toLowerCase();
-    const hash = Math.random().toString(36).slice(2, 10);
-    const policySubjectUrl = `${EX_BASE}policy-${targetShort}-${hash}`;
-    
-    let policyThing = createThing({ url: policySubjectUrl });
-    
-    // ✅ Set core policy properties
-    policyThing = setUrl(policyThing, `${RDF}type`, `${ODRL}Policy`);
-    
-    // ✅ Add dct:identifier if provided (for matching with violations)
-    if (policy.identifier) {
-      policyThing = setStringNoLocale(policyThing, `${DCT}identifier`, policy.identifier);
-    }
-    
-    policyThing = setStringNoLocale(policyThing, `${DCT}title`, policy.title);
-    policyThing = setStringNoLocale(policyThing, `${DCT}description`, policy.description || '');
-    
-    // ✅ Format timestamp without milliseconds: "2026-02-13T09:00:00Z"
-    const createdDate = policy.createdAt || new Date();
-    const timestamp = createdDate.toISOString().replace(/\.\d{3}Z$/, 'Z');
-    policyThing = setDatetime(policyThing, `${DCT}created`, new Date(timestamp));
-    
-    // ✅ Add dct:creator
-    policyThing = setUrl(policyThing, `${DCT}creator`, `${EX_BASE}pod-owner`);
-    
-    // ✅ Add odrl:profile
-    policyThing = setUrl(policyThing, `${ODRL}profile`, 'https://w3id.org/dpv/odrl');
-    
-    // Set target
-    const fullTargetIri = Object.keys(FIELD_LABELS).find(iri => shortIri(cleanIRI(iri)) === policy.targetField) || policy.targetField;
-    policyThing = setUrl(policyThing, `${ODRL}target`, fullTargetIri);
-    policyThing = setBoolean(policyThing, `${FORCE}policyActive`, policy.active);
-    
-    const constraint = policy.constraints[0];
-    if (constraint) {
-      // ✅ Use blank nodes for constraint and permission (with _: prefix)
-      const constraintBlankId = `_:constraint-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-      const permissionBlankId = `_:permission-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  /* ========================= SAVE POLICY - FIXED: Auto-generate Identifier ========================= */
+  const savePolicy = async (policy: Policy) => {
+    if (!session?.info?.webId) return;
+    try {
+      const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
+      const policyUrl = `${podUrls[0]}${POLICY_PATH}`;
+      let dataset;
+      try { dataset = await getSolidDataset(policyUrl, { fetch: session.fetch }); } catch { dataset = createSolidDataset(); }
       
-      const constraintThing = createThing({ url: constraintBlankId });
-      const permissionThing = createThing({ url: permissionBlankId });
-      
-      if (constraint.type === 'count') {
-        setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}count`);
-        setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
-        setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value));
-      } else if (constraint.type === 'timeWindow') {
-        setUrl(constraintThing, `${ODRL}leftOperand`, `${EX_BASE}timeWindow`);
-        setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
-        setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value));
-      } else if (constraint.type === 'location') {
-        setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}spatial`);
-        setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
-        setStringNoLocale(constraintThing, `${ODRL}rightOperand`, String(constraint.value));
+      let policyThing: ThingPersisted;
+      if (policy.id.startsWith('http')) {
+        const existingThing = getThingAll(dataset).find((t) => t.url === policy.id);
+        policyThing = existingThing ?? createThing({ url: policy.id });
+      } else {
+        policyThing = createThing({ url: `${podUrls[0]}${POLICY_PATH}#${policy.id}` });
       }
       
-      // Set permission properties
-      setUrl(permissionThing, `${ODRL}assigner`, `${EX_BASE}pod-owner`);
-      setUrl(permissionThing, `${ODRL}assignee`, `${EX_BASE}any-app`);
-      setUrl(permissionThing, `${ODRL}action`, `${ODRL}read`);
-      setUrl(permissionThing, `${ODRL}constraint`, constraintThing.url);
+      const fullTargetIri = Object.keys(FIELD_LABELS).find(iri => shortIri(cleanIRI(iri)) === policy.targetField) || policy.targetField;
+      policyThing = setUrl(policyThing, `${RDF}type`, `${ODRL}Policy`);
+      policyThing = setStringNoLocale(policyThing, `${DCT}title`, policy.title);
+      policyThing = setStringNoLocale(policyThing, `${DCT}description`, policy.description || '');
       
-      // Link permission to policy
-      policyThing = setUrl(policyThing, `${ODRL}permission`, permissionThing.url);
+      // ✅ Auto-generate dct:identifier if not exists (for new policies)
+      if (!policy.identifier) {
+        policy.identifier = generatePolicyIdentifier();
+      }
+      policyThing = setStringNoLocale(policyThing, `${DCT}identifier`, policy.identifier);
       
-      // Add things to dataset (blank nodes will be serialized as _:n3-x)
-      dataset = setThing(dataset, constraintThing);
-      dataset = setThing(dataset, permissionThing);
+      policyThing = setDatetime(policyThing, `${DCT}created`, policy.createdAt || new Date());
+      policyThing = setUrl(policyThing, `${ODRL}target`, fullTargetIri);
+      policyThing = setBoolean(policyThing, `${FORCE}policyActive`, policy.active);
+      
+      const constraint = policy.constraints[0];
+      if (constraint) {
+        let constraintThing = createThing({ url: `${policyThing.url}#constraint-${Date.now()}` });
+        let permissionThing = createThing({ url: `${policyThing.url}#permission-${Date.now()}` });
+        
+        if (constraint.type === 'count') {
+          constraintThing = setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}count`);
+          constraintThing = setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
+          constraintThing = setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value));
+        } else if (constraint.type === 'timeWindow') {
+          constraintThing = setUrl(constraintThing, `${ODRL}leftOperand`, `${EX_BASE}timeWindow`);
+          constraintThing = setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
+          constraintThing = setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value));
+        } else if (constraint.type === 'location') {
+          constraintThing = setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}spatial`);
+          constraintThing = setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
+          constraintThing = setStringNoLocale(constraintThing, `${ODRL}rightOperand`, String(constraint.value));
+        }
+        
+        permissionThing = setUrl(permissionThing, `${ODRL}assigner`, `${EX_BASE}pod-owner`);
+        permissionThing = setUrl(permissionThing, `${ODRL}assignee`, `${EX_BASE}any-app`);
+        permissionThing = setUrl(permissionThing, `${ODRL}action`, `${ODRL}read`);
+        permissionThing = setUrl(permissionThing, `${ODRL}constraint`, constraintThing.url);
+        policyThing = setUrl(policyThing, `${ODRL}permission`, permissionThing.url);
+        dataset = setThing(dataset, constraintThing);
+        dataset = setThing(dataset, permissionThing);
+      }
+      dataset = setThing(dataset, policyThing);
+      await saveSolidDatasetAt(policyUrl, dataset, { fetch: session.fetch });
+      
+      toast({ title: 'Policy saved', description: `${policy.title} updated`, status: 'success' });
+      await loadPolicies();
+    } catch (err) {
+      console.error('Failed to save policy:', err);
+      toast({ title: 'Failed to save policy', status: 'error' });
+      throw err;
     }
-    
-    dataset = setThing(dataset, policyThing);
-    await saveSolidDatasetAt(policyUrl, dataset, { fetch: session.fetch });
-    
-    toast({ title: 'Policy saved', description: `${policy.title} updated`, status: 'success' });
-    await loadPolicies();
-  } catch (err) {
-    console.error('Failed to save policy:', err);
-    toast({ title: 'Failed to save policy', status: 'error' });
-    throw err;
-  }
-};
+  };
 
   /* ========================= SAVE PRIVACY MAPPINGS ========================= */
   const savePrivacyMappings = async () => {
@@ -999,9 +991,8 @@ const savePolicy = async (policy: Policy) => {
     });
   }, [logs, search, sensitivity, dateFilter, appFilter, decisionFilter]);
 
-  // ✅ LOGIC: Group violation logs by App for Summary Table
+  // LOGIC: Group violation logs by App for Summary Table
   const violationSummaryData = useMemo(() => {
-    // Filter logs with decision VIOLATION or explicit violations
     const violationLogs = filteredLogs.filter((l) => l.decision === 'VIOLATION' || l.violations.length > 0);
     const grouped: Record<string, AccessLogEntry[]> = {};
     
@@ -1021,12 +1012,10 @@ const savePolicy = async (policy: Policy) => {
       });
       const latestLog = appLogs[0];
       
-      // ✅ Get violated policy from explicit violations OR from sensitive fields
       let violatedPolicyId = 'unknown';
       if (latestLog.violations.length > 0) {
         violatedPolicyId = latestLog.violations[0].violatedPolicy;
       } else if (latestLog.fields.some(f => f.isSensitive)) {
-        // Use the first sensitive field's IRI as the violated policy identifier
         const firstSensitiveField = latestLog.fields.find(f => f.isSensitive);
         if (firstSensitiveField) {
           violatedPolicyId = firstSensitiveField.fieldIri;
@@ -1070,45 +1059,35 @@ const savePolicy = async (policy: Policy) => {
     
     const cleanIdentifier = cleanIRI(violatedPolicyIdentifier);
     
-    console.log('🔍 Finding policy for violated identifier:', cleanIdentifier);
-    console.log('Available policies:', policies.map(p => ({ 
-      title: p.title, 
-      identifier: p.identifier, 
-      targetIRI: p.targetIRI,
-      targetField: p.targetField 
-    })));
-    
     // 1. Match by dct:identifier (URN UUID) - PRIMARY MATCH
     const byIdentifier = policies.find(p => 
       p.identifier && cleanIRI(p.identifier) === cleanIdentifier
     );
-    if (byIdentifier) {
-      console.log('✅ Matched by identifier:', byIdentifier.title);
-      return byIdentifier;
-    }
+    if (byIdentifier) return byIdentifier;
     
-    // 2. Match by targetIRI (e.g., https://schema.org/bloodType)
+    // 2. Match by targetIRI
     const byTarget = policies.find(p => cleanIRI(p.targetIRI || '') === cleanIdentifier);
-    if (byTarget) {
-      console.log('✅ Matched by targetIRI:', byTarget.title);
-      return byTarget;
-    }
+    if (byTarget) return byTarget;
     
-    // 3. Match by targetField short name (e.g., "bloodType")
+    // 3. Match by targetField short name
     const shortName = shortIri(cleanIdentifier);
     const byShort = policies.find(p => p.targetField === shortName);
-    if (byShort) {
-      console.log('✅ Matched by targetField:', byShort.title);
-      return byShort;
-    }
+    if (byShort) return byShort;
     
-    console.log('❌ No matching policy found');
     return undefined;
   };
 
   const handleAddPolicy = () => {
     setEditingPolicy(null);
-    setNewPolicy({ title: '', description: '', targetField: '', targetIRI: '', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 1 }] });
+    setNewPolicy({ 
+      title: '', 
+      description: '', 
+      targetField: '', 
+      targetIRI: '', 
+      active: true, 
+      constraints: [{ type: 'count', operator: 'lteq', value: 1 }],
+      identifier: undefined, // ✅ Will be auto-generated on save
+    });
     onPolicyModalOpen();
   };
   
@@ -1129,7 +1108,7 @@ const savePolicy = async (policy: Policy) => {
     }
     const policyToSave: Policy = {
       id: editingPolicy?.id || generatePolicyId(),
-      identifier: editingPolicy?.identifier,
+      identifier: editingPolicy?.identifier, // ✅ Preserve existing identifier when editing
       title: newPolicy.title!,
       description: newPolicy.description || '',
       targetField: newPolicy.targetField!,
@@ -1372,7 +1351,6 @@ const savePolicy = async (policy: Policy) => {
                 <Text fontSize="sm" color="gray.600">
                   Showing detailed history of {selectedAppHistory.logs.length} violation(s) for this application.
                 </Text>
-                {/* HISTORY TABLE INSIDE MODAL */}
                 <Table variant="simple" size="sm">
                   <Thead bg="gray.50">
                     <Tr>
@@ -1385,7 +1363,6 @@ const savePolicy = async (policy: Policy) => {
                   </Thead>
                   <Tbody>
                     {selectedAppHistory.logs.map((log) => {
-                      // ✅ Get violated policy from explicit violations OR from sensitive fields
                       let violatedPolicyId = 'unknown';
                       if (log.violations.length > 0) {
                         violatedPolicyId = log.violations[0].violatedPolicy;
@@ -1400,7 +1377,6 @@ const savePolicy = async (policy: Policy) => {
                       const policyTitle = matchedPolicy ? matchedPolicy.title : 'Unknown Policy';
                       const policyIdentifier = matchedPolicy?.identifier || shortIri(violatedPolicyId);
                       
-                      // ✅ Get violated fields from explicit violations OR from sensitive fields
                       let violatedFieldsText = 'General / No Fields';
                       if (log.violations.length > 0) {
                         violatedFieldsText = log.violations.map(v => getFieldLabel(v.violatedField)).join(', ');
@@ -1424,7 +1400,6 @@ const savePolicy = async (policy: Policy) => {
                     })}
                   </Tbody>
                 </Table>
-                {/* DETAILED FIELD LIST (Inline) */}
                 <Divider />
                 <Text fontWeight="bold" fontSize="md">Accessed Fields Breakdown</Text>
                 {selectedAppHistory.logs.map((log, idx) => (
@@ -1459,7 +1434,7 @@ const savePolicy = async (policy: Policy) => {
         </ModalContent>
       </Modal>
 
-      {/* POLICY SETTINGS MODAL */}
+      {/* POLICY SETTINGS MODAL - FIXED: Identifier Auto-Generated */}
       <Modal isOpen={isPolicyModalOpen} onClose={onPolicyModalClose} size="4xl">
         <ModalOverlay />
         <ModalContent bg="white" color="gray.800">
@@ -1476,15 +1451,16 @@ const savePolicy = async (policy: Policy) => {
                   <VStack spacing={4} align="stretch">
                     <FormControl isRequired><FormLabel>Policy Title</FormLabel><Input value={newPolicy.title || ''} onChange={(e) => setNewPolicy((p) => ({ ...p, title: e.target.value }))} placeholder="e.g., Blood Type Access Limit" /></FormControl>
                     <FormControl><FormLabel>Description</FormLabel><Input value={newPolicy.description || ''} onChange={(e) => setNewPolicy((p) => ({ ...p, description: e.target.value }))} placeholder="Describe what this policy controls" /></FormControl>
-                    <FormControl>
-                      <FormLabel>Policy Identifier (dct:identifier)</FormLabel>
-                      <Input 
-                        value={newPolicy.identifier || ''} 
-                        onChange={(e) => setNewPolicy((p) => ({ ...p, identifier: e.target.value }))} 
-                        placeholder="e.g., urn:uuid:2c5c9cc0-c73e-4f78-8905-c08bd427866d"
-                      />
-                      <FormHelperText>Used to match violations from access logs. Optional.</FormHelperText>
-                    </FormControl>
+                    
+                    {/* ✅ REMOVED: Manual identifier input - now auto-generated */}
+                    {editingPolicy && newPolicy.identifier && (
+                      <FormControl>
+                        <FormLabel>Policy Identifier (Auto-generated)</FormLabel>
+                        <Input value={newPolicy.identifier} isReadOnly bg="gray.50" />
+                        <FormHelperText>This identifier is used to match violations from access logs.</FormHelperText>
+                      </FormControl>
+                    )}
+                    
                     <FormControl isRequired>
                       <FormLabel>Target Field</FormLabel>
                       <Select value={newPolicy.targetField || ''} onChange={(e) => setNewPolicy((p) => ({ ...p, targetField: e.target.value }))} placeholder="Select a field to protect" isDisabled={!!editingPolicy}>
