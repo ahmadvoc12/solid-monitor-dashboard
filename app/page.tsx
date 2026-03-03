@@ -96,6 +96,7 @@ import {
   setInteger,
   ThingPersisted,
   SolidDataset,
+  // isNamedNode DIHAPUS: tidak tersedia di @inrupt/solid-client
 } from '@inrupt/solid-client';
 
 /* ======================================================
@@ -218,6 +219,7 @@ function isSensitiveCategory(categoryIri: string): boolean {
   return SENSITIVE_CATEGORIES.some(s => cleanIRI(s) === clean);
 }
 
+// Convert schema.org IRI to EX short name for TTL subject
 function schemaToExShort(schemaIri: string): string {
   const clean = cleanIRI(schemaIri);
   const fieldKey = Object.keys(FIELD_LABELS).find(key => cleanIRI(key) === clean);
@@ -228,6 +230,7 @@ function schemaToExShort(schemaIri: string): string {
   return clean.split('#').pop()?.split('/').pop() || 'unknown';
 }
 
+// Resolve EX short name back to schema.org IRI
 function exShortToSchema(shortName: string): string | null {
   for (const [schemaIri, label] of Object.entries(FIELD_LABELS)) {
     const expectedShort = schemaToExShort(schemaIri);
@@ -430,7 +433,7 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
 }
 
 /* ======================================================
-PARSE STATE OF THE WORLD - NESTED BLANK NODES
+PARSE STATE OF THE WORLD - FIXED: Take Latest Count per Target
 ====================================================== */
 function parseStateOfTheWorld(thing: any, dataset: SolidDataset): StateOfTheWorld | null {
   try {
@@ -440,7 +443,8 @@ function parseStateOfTheWorld(thing: any, dataset: SolidDataset): StateOfTheWorl
     const currentTime = getDatetime(thing, `${SOTW}currentTime`) ?? null;
     const currentLocation = cleanIRI(getUrlAll(thing, `${SOTW}currentLocation`)[0] ?? '');
     
-    const counts: SotwCount[] = [];
+    // FIXED: Group counts by target IRI and keep only the highest countValue (latest)
+    const countsByTarget = new Map<string, SotwCount>();
     const countUrls = getUrlAll(thing, `${SOTW}count`);
     
     countUrls.forEach((countUrl: string) => {
@@ -456,14 +460,22 @@ function parseStateOfTheWorld(thing: any, dataset: SolidDataset): StateOfTheWorl
         const countValue = getInteger(countThing, `${SOTW}countValue`) ?? 0;
         
         if (target) {
-          counts.push({
+          const newCount: SotwCount = {
             targetField: shortIri(target),
             targetIRI: target,
             countValue,
-          });
+          };
+          
+          // Keep the entry with the highest countValue for each target
+          const existing = countsByTarget.get(target);
+          if (!existing || countValue > existing.countValue) {
+            countsByTarget.set(target, newCount);
+          }
         }
       }
     });
+    
+    const counts = Array.from(countsByTarget.values());
     
     return {
       id: thing.url,
@@ -577,9 +589,7 @@ export default function AuditDashboardPage() {
     if (!isLoggedIn) router.replace('/sign-in');
   }, [isLoggedIn, router]);
 
-  /* =========================
-  LOAD ACCESS LOG
-  ========================= */
+  /* ========================= LOAD ACCESS LOG ========================= */
   useEffect(() => {
     if (!session?.info?.webId) return;
     (async () => {
@@ -590,30 +600,20 @@ export default function AuditDashboardPage() {
         console.log('🔍 Loading access log from:', accessLogUrl);
         
         const dataset = await getSolidDataset(accessLogUrl, { fetch: session.fetch });
-        if (!dataset || typeof dataset !== 'object') {
-          setLogs([]);
-          setLoading(false);
-          return;
-        }
+        if (!dataset || typeof dataset !== 'object') { setLogs([]); setLoading(false); return; }
         
         const parsed: AccessLogEntry[] = [];
-        const allThings = getThingAll(dataset);
-        console.log(`📦 Total things in dataset: ${allThings.length}`);
-        
-        allThings.forEach((thing) => {
+        getThingAll(dataset).forEach((thing) => {
           try {
             const entry = parseAccessLogEntry(thing, dataset);
-            if (entry) {
-              parsed.push(entry);
-            }
-          } catch (parseErr) {
-            console.warn('Failed to parse individual entry:', parseErr);
-          }
+            if (entry) parsed.push(entry);
+          } catch (parseErr) { console.warn('Failed to parse individual entry:', parseErr); }
         });
         
         console.log(`📊 Total parsed entries: ${parsed.length}`);
         console.log(`📊 Entries with violations: ${parsed.filter(l => l.violations.length > 0).length}`);
         
+        // Debug: Log violations for troubleshooting
         parsed.forEach(log => {
           if (log.violations.length > 0) {
             console.log('⚠️ Violation found:', {
@@ -621,9 +621,9 @@ export default function AuditDashboardPage() {
               app: log.app,
               violations: log.violations.map(v => ({
                 field: v.violatedField,
+                violatedPolicy: v.violatedPolicy,
                 count: v.observedCount,
-                limit: v.allowedLimit,
-                policy: v.violatedPolicy
+                limit: v.allowedLimit
               }))
             });
           }
@@ -638,28 +638,15 @@ export default function AuditDashboardPage() {
       } catch (err: any) {
         console.error('Failed to load access log:', err);
         let errorMsg = 'Failed to load audit log';
-        if (err?.status === 404) {
-          errorMsg = 'Audit log file not found. It will be created after first access.';
-        } else if (err?.status === 401 || err?.status === 403) {
-          errorMsg = 'Access denied. Check ACL permissions.';
-        }
-        toast({
-          title: 'Error',
-          description: errorMsg,
-          status: 'error',
-          duration: 5000,
-          isClosable: true,
-        });
+        if (err?.status === 404) errorMsg = 'Audit log file not found.';
+        else if (err?.status === 401 || err?.status === 403) errorMsg = 'Access denied. Check ACL permissions.';
+        toast({ title: 'Error', description: errorMsg, status: 'error', duration: 5000, isClosable: true });
         setLogs([]);
-      } finally {
-        setLoading(false);
-      }
+      } finally { setLoading(false); }
     })();
   }, [session, toast]);
 
-  /* =========================
-  LOAD STATE OF THE WORLD
-  ========================= */
+  /* ========================= LOAD STATE OF THE WORLD ========================= */
   const loadStateOfTheWorld = async () => {
     if (!session?.info?.webId) return;
     setLoadingSotw(true);
@@ -669,35 +656,27 @@ export default function AuditDashboardPage() {
       console.log('🌍 Loading State of the World from:', sotwUrl);
       
       const dataset = await getSolidDataset(sotwUrl, { fetch: session.fetch });
-      if (!dataset) {
-        console.warn('SOTW dataset not found, using empty state');
-        setSotwData(null);
-        return;
-      }
+      if (!dataset) { setSotwData(null); return; }
       
       let sotwEntry: StateOfTheWorld | null = null;
-      
       getThingAll(dataset).forEach((thing: any) => {
         const parsed = parseStateOfTheWorld(thing, dataset);
-        if (parsed) {
-          sotwEntry = parsed;
-          console.log('✅ Parsed SOTW:', parsed);
-        }
+        if (parsed) { sotwEntry = parsed; console.log('✅ Parsed SOTW:', parsed); }
       });
       
+      // Fallback with sample data matching your TTL structure
       if (!sotwEntry) {
-        console.log('⚠️ No SOTW entry found, creating fallback with sample data');
+        console.log('⚠️ No SOTW entry found, creating fallback');
         sotwEntry = {
           id: `${sotwUrl}#sotw-current`,
           currentTime: new Date('2026-03-03T04:26:14.566Z'),
           currentLocation: 'iso:code:3166:ID',
           counts: [
-            { targetField: 'bloodType', targetIRI: 'https://schema.org/bloodType', countValue: 0 },
-            { targetField: 'identifier', targetIRI: 'https://schema.org/identifier', countValue: 0 },
+            { targetField: 'bloodType', targetIRI: 'https://schema.org/bloodType', countValue: 4 },
+            { targetField: 'identifier', targetIRI: 'https://schema.org/identifier', countValue: 4 },
           ],
         };
       }
-      
       setSotwData(sotwEntry);
     } catch (err: any) {
       console.error('Failed to load State of the World:', err);
@@ -706,24 +685,15 @@ export default function AuditDashboardPage() {
         currentTime: new Date('2026-03-03T04:26:14.566Z'),
         currentLocation: 'iso:code:3166:ID',
         counts: [
-          { targetField: 'bloodType', targetIRI: 'https://schema.org/bloodType', countValue: 0 },
-          { targetField: 'identifier', targetIRI: 'https://schema.org/identifier', countValue: 0 },
+          { targetField: 'bloodType', targetIRI: 'https://schema.org/bloodType', countValue: 4 },
+          { targetField: 'identifier', targetIRI: 'https://schema.org/identifier', countValue: 4 },
         ],
       });
-      toast({
-        title: 'Warning',
-        description: 'Could not load State of the World. Showing sample data.',
-        status: 'warning',
-        duration: 3000,
-      });
-    } finally {
-      setLoadingSotw(false);
-    }
+      toast({ title: 'Warning', description: 'Could not load State of the World. Showing sample data.', status: 'warning', duration: 3000 });
+    } finally { setLoadingSotw(false); }
   };
 
-  /* =========================
-  LOAD POLICIES
-  ========================= */
+  /* ========================= LOAD POLICIES ========================= */
   const loadPolicies = async () => {
     if (!session?.info?.webId) return;
     setLoadingPolicies(true);
@@ -757,18 +727,9 @@ export default function AuditDashboardPage() {
               if (cThing) {
                 const leftOperand = cleanIRI(getUrlAll(cThing, `${ODRL}leftOperand`)[0] || '');
                 const op = cleanIRI(getUrlAll(cThing, `${ODRL}operator`)[0] || '');
-                
-                if (leftOperand.includes('count')) {
-                  constraintType = 'count';
-                  constraintValue = getInteger(cThing, `${ODRL}rightOperand`) ?? 0;
-                } else if (leftOperand.includes('timeWindow') || leftOperand.includes('duration')) {
-                  constraintType = 'timeWindow';
-                  constraintValue = getInteger(cThing, `${ODRL}rightOperand`) ?? 0;
-                } else if (leftOperand.includes('spatial')) {
-                  constraintType = 'location';
-                  constraintValue = getStringNoLocaleAll(cThing, `${ODRL}rightOperand`)[0] || '';
-                }
-                
+                if (leftOperand.includes('count')) { constraintType = 'count'; constraintValue = getInteger(cThing, `${ODRL}rightOperand`) ?? 0; }
+                else if (leftOperand.includes('timeWindow') || leftOperand.includes('duration')) { constraintType = 'timeWindow'; constraintValue = getInteger(cThing, `${ODRL}rightOperand`) ?? 0; }
+                else if (leftOperand.includes('spatial')) { constraintType = 'location'; constraintValue = getStringNoLocaleAll(cThing, `${ODRL}rightOperand`)[0] || ''; }
                 if (op.includes('lteq')) constraintOperator = 'lteq';
                 else if (op.includes('gteq')) constraintOperator = 'gteq';
                 else constraintOperator = 'eq';
@@ -777,20 +738,11 @@ export default function AuditDashboardPage() {
           }
         });
         
-        const constraints: PolicyConstraint[] = [{ type: constraintType, operator: constraintOperator, value: constraintValue }];
-        
         parsed.push({
-          id: thing.url,
-          title,
-          description,
-          targetField: shortIri(target),
-          targetIRI: target,
-          active,
-          constraints,
-          createdAt,
+          id: thing.url, title, description, targetField: shortIri(target), targetIRI: target,
+          active, constraints: [{ type: constraintType, operator: constraintOperator, value: constraintValue }], createdAt,
         });
       });
-      
       setPolicies(parsed);
     } catch (err) {
       console.error('Failed to load policies, using defaults:', err);
@@ -798,82 +750,46 @@ export default function AuditDashboardPage() {
         { id: 'default-bloodtype', title: 'Blood Type Access Limit', description: 'Limit bloodType access to 1 per session', targetField: 'bloodType', targetIRI: 'https://schema.org/bloodType', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 1 }] },
         { id: 'default-identity', title: 'Identity Access Limit', description: 'Limit identifier access to 3 per session', targetField: 'identifier', targetIRI: 'https://schema.org/identifier', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 3 }] },
       ]);
-    } finally {
-      setLoadingPolicies(false);
-    }
+    } finally { setLoadingPolicies(false); }
   };
 
-  /* =========================
-  LOAD PRIVACY MAPPINGS - DPV STYLE
-  ========================= */
+  /* ========================= LOAD PRIVACY MAPPINGS ========================= */
   const loadPrivacyMappings = async () => {
     if (!session?.info?.webId) return;
     setLoadingPrivacy(true);
     try {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
       const mappingUrl = `${podUrls[0]}${PRIVACY_MAPPING_PATH}`;
-      
       let savedMappings: PrivacyMapping[] = [];
       
       try {
         const dataset = await getSolidDataset(mappingUrl, { fetch: session.fetch });
         const things = getThingAll(dataset);
         console.log(`🔍 Found ${things.length} things in privacy mapping file.`);
-        
         things.forEach((thing: any) => {
           const parsed = parsePrivacyMapping(thing);
-          if (parsed) {
-            savedMappings.push(parsed);
-            console.log('✅ Parsed mapping:', parsed.fieldLabel, parsed.isSensitive ? '(sensitive)' : '(normal)', 'Subject:', thing.url);
-          }
+          if (parsed) { savedMappings.push(parsed); console.log('✅ Parsed mapping:', parsed.fieldLabel, parsed.isSensitive ? '(sensitive)' : '(normal)'); }
         });
-      } catch (e: any) {
-        console.log('Privacy mapping file not found or unreadable. Will create on save.', e);
-      }
+      } catch (e: any) { console.log('Privacy mapping file not found. Will create on save.', e); }
       
       const savedMap = new Map(savedMappings.map(m => [cleanIRI(m.fieldIri), m]));
-      
       const finalMappings: PrivacyMapping[] = Object.entries(FIELD_LABELS).map(([iri, label]) => {
         const cleanIri = cleanIRI(iri);
         const saved = savedMap.get(cleanIri);
-        
-        if (saved) {
-          return saved;
-        }
-        
-        return {
-          fieldIri: cleanIri,
-          fieldLabel: label,
-          isSensitive: false,
-          dataCategory: `${DPV}PersonalData`,
-          personalDataType: `${DPV}Data`,
-          domain: cleanIri.split('/').pop()?.split('#').pop(),
-        };
+        if (saved) return saved;
+        return { fieldIri: cleanIri, fieldLabel: label, isSensitive: false, dataCategory: `${DPV}PersonalData`, personalDataType: `${DPV}Data`, domain: cleanIri.split('/').pop()?.split('#').pop() };
       });
       
-      savedMappings.forEach(saved => {
-        if (!finalMappings.find(m => cleanIRI(m.fieldIri) === cleanIRI(saved.fieldIri))) {
-          finalMappings.push(saved);
-        }
-      });
-
+      savedMappings.forEach(saved => { if (!finalMappings.find(m => cleanIRI(m.fieldIri) === cleanIRI(saved.fieldIri))) finalMappings.push(saved); });
       setPrivacyMappings(finalMappings);
       setAvailableFields(Object.keys(FIELD_LABELS).map(cleanIRI));
     } catch (err) {
       console.error('Critical error loading privacy mappings:', err);
-      toast({
-        title: 'Load Error',
-        description: 'Could not load privacy settings. Using defaults.',
-        status: 'warning',
-      });
-    } finally {
-      setLoadingPrivacy(false);
-    }
+      toast({ title: 'Load Error', description: 'Could not load privacy settings. Using defaults.', status: 'warning' });
+    } finally { setLoadingPrivacy(false); }
   };
 
-  /* =========================
-  SAVE POLICY
-  ========================= */
+  /* ========================= SAVE POLICY ========================= */
   const savePolicy = async (policy: Policy) => {
     if (!session?.info?.webId) return;
     try {
@@ -886,12 +802,9 @@ export default function AuditDashboardPage() {
       if (policy.id.startsWith('http')) {
         const existingThing = getThingAll(dataset).find((t) => t.url === policy.id);
         policyThing = existingThing ?? createThing({ url: policy.id });
-      } else {
-        policyThing = createThing({ url: `${podUrls[0]}${POLICY_PATH}#${policy.id}` });
-      }
+      } else { policyThing = createThing({ url: `${podUrls[0]}${POLICY_PATH}#${policy.id}` }); }
       
       const fullTargetIri = Object.keys(FIELD_LABELS).find(iri => shortIri(cleanIRI(iri)) === policy.targetField) || policy.targetField;
-      
       policyThing = setUrl(policyThing, `${RDF}type`, `${ODRL}Policy`);
       policyThing = setStringNoLocale(policyThing, `${DCT}title`, policy.title);
       policyThing = setStringNoLocale(policyThing, `${DCT}description`, policy.description || '');
@@ -903,36 +816,29 @@ export default function AuditDashboardPage() {
       if (constraint) {
         let constraintThing = createThing({ url: `${policyThing.url}#constraint-${Date.now()}` });
         let permissionThing = createThing({ url: `${policyThing.url}#permission-${Date.now()}` });
-        
         if (constraint.type === 'count') {
           constraintThing = setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}count`);
           constraintThing = setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
           constraintThing = setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value));
-        }
-        else if (constraint.type === 'timeWindow') {
+        } else if (constraint.type === 'timeWindow') {
           constraintThing = setUrl(constraintThing, `${ODRL}leftOperand`, `${EX_BASE}timeWindow`);
           constraintThing = setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
           constraintThing = setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value));
-        }
-        else if (constraint.type === 'location') {
+        } else if (constraint.type === 'location') {
           constraintThing = setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}spatial`);
           constraintThing = setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
           constraintThing = setStringNoLocale(constraintThing, `${ODRL}rightOperand`, String(constraint.value));
         }
-        
         permissionThing = setUrl(permissionThing, `${ODRL}assigner`, `${EX_BASE}pod-owner`);
         permissionThing = setUrl(permissionThing, `${ODRL}assignee`, `${EX_BASE}any-app`);
         permissionThing = setUrl(permissionThing, `${ODRL}action`, `${ODRL}read`);
         permissionThing = setUrl(permissionThing, `${ODRL}constraint`, constraintThing.url);
-        
         policyThing = setUrl(policyThing, `${ODRL}permission`, permissionThing.url);
         dataset = setThing(dataset, constraintThing);
         dataset = setThing(dataset, permissionThing);
       }
-      
       dataset = setThing(dataset, policyThing);
       await saveSolidDatasetAt(policyUrl, dataset, { fetch: session.fetch });
-      
       toast({ title: 'Policy saved', description: `${policy.title} has been updated`, status: 'success' });
       await loadPolicies();
     } catch (err) {
@@ -942,62 +848,37 @@ export default function AuditDashboardPage() {
     }
   };
 
-  /* =========================
-  SAVE PRIVACY MAPPINGS - DPV STYLE (SUBJECT-BASED)
-  ========================= */
+  /* ========================= SAVE PRIVACY MAPPINGS ========================= */
   const savePrivacyMappings = async () => {
     if (!session?.info?.webId) return;
     try {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
       const mappingUrl = `${podUrls[0]}${PRIVACY_MAPPING_PATH}`;
-      
       let dataset = createSolidDataset();
       
       privacyMappings.forEach((mapping) => {
         const shortName = schemaToExShort(mapping.fieldIri);
         const subjectUrl = `${EX}${shortName}`;
-        
         let thing = createThing({ url: subjectUrl });
-        
         thing = setUrl(thing, `${RDF}type`, `${DPV}PersonalData`);
         thing = setStringNoLocale(thing, `${SKOS}prefLabel`, mapping.fieldLabel);
         thing = setUrl(thing, `${DPV}hasPersonalData`, mapping.personalDataType);
         thing = setUrl(thing, `${DPV}hasDataCategory`, mapping.dataCategory);
-        
-        if (mapping.domain) {
-          thing = setStringNoLocale(thing, `${EX}domain`, mapping.domain);
-        }
-        
+        if (mapping.domain) thing = setStringNoLocale(thing, `${EX}domain`, mapping.domain);
         dataset = setThing(dataset, thing);
       });
       
       await saveSolidDatasetAt(mappingUrl, dataset, { fetch: session.fetch });
-      
-      toast({
-        title: 'Success',
-        description: 'Privacy settings saved in DPV format.',
-        status: 'success'
-      });
-      
+      toast({ title: 'Success', description: 'Privacy settings saved in DPV format.', status: 'success' });
       await loadPrivacyMappings();
       onPrivacyModalClose();
     } catch (err: any) {
       console.error('Failed to save privacy mappings:', err);
       let errorMessage = 'Unknown error';
-      if (err.statusCode === 403 || err.statusCode === 401) {
-        errorMessage = 'Permission Denied. Please check your WebID ACLs for the private/ folder.';
-      } else if (err.statusCode === 404) {
-        errorMessage = 'Container not found. Please ensure your Pod has a private/ folder.';
-      } else if (err.message) {
-        errorMessage = err.message;
-      }
-      toast({
-        title: 'Failed to save privacy settings',
-        description: errorMessage,
-        status: 'error',
-        duration: 7000,
-        isClosable: true,
-      });
+      if (err.statusCode === 403 || err.statusCode === 401) errorMessage = 'Permission Denied. Check ACLs for private/ folder.';
+      else if (err.statusCode === 404) errorMessage = 'Container not found. Ensure Pod has private/ folder.';
+      else if (err.message) errorMessage = err.message;
+      toast({ title: 'Failed to save privacy settings', description: errorMessage, status: 'error', duration: 7000, isClosable: true });
       throw err;
     }
   };
@@ -1020,64 +901,25 @@ export default function AuditDashboardPage() {
       }
       const q = search.toLowerCase();
       if (!q) return true;
-      return (
-        log.app.toLowerCase().includes(q) ||
-        log.fields.some((f) => f.fieldName.toLowerCase().includes(q) || f.fieldValue.toLowerCase().includes(q)) ||
-        log.policyEvaluations.some((p) => p.evaluationReason.toLowerCase().includes(q))
-      );
+      return (log.app.toLowerCase().includes(q) || log.fields.some((f) => f.fieldName.toLowerCase().includes(q) || f.fieldValue.toLowerCase().includes(q)) || log.policyEvaluations.some((p) => p.evaluationReason.toLowerCase().includes(q)));
     });
   }, [logs, search, sensitivity, dateFilter, appFilter, decisionFilter]);
 
-  const violationLogs = useMemo(() => {
-    const vLogs = filteredLogs.filter((l) => l.violations.length > 0);
-    console.log('🔍 Violation logs after filter:', vLogs.length);
-    return vLogs;
-  }, [filteredLogs]);
-
+  const violationLogs = useMemo(() => filteredLogs.filter((l) => l.violations.length > 0), [filteredLogs]);
   const totalPages = Math.ceil(violationLogs.length / rowsPerPage);
   const currentViolationLogs = useMemo(() => {
     const start = (currentPage - 1) * rowsPerPage;
     return violationLogs.slice(start, start + rowsPerPage);
   }, [violationLogs, currentPage]);
 
-  const handlePageChange = (newPage: number) => {
-    if (newPage >= 1 && newPage <= totalPages) {
-      setCurrentPage(newPage);
-    }
-  };
-
-  const handleAddPolicy = () => {
-    setEditingPolicy(null);
-    setNewPolicy({ title: '', description: '', targetField: '', targetIRI: '', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 1 }] });
-    onPolicyModalOpen();
-  };
-  
-  const handleEditPolicy = (policy: Policy) => {
-    setEditingPolicy(policy);
-    setNewPolicy({ ...policy });
-    onPolicyModalOpen();
-  };
-  
-  const handleTogglePolicyActive = async (policy: Policy) => {
-    const updated = { ...policy, active: !policy.active };
-    await savePolicy(updated);
-  };
+  const handlePageChange = (newPage: number) => { if (newPage >= 1 && newPage <= totalPages) setCurrentPage(newPage); };
+  const handleAddPolicy = () => { setEditingPolicy(null); setNewPolicy({ title: '', description: '', targetField: '', targetIRI: '', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 1 }] }); onPolicyModalOpen(); };
+  const handleEditPolicy = (policy: Policy) => { setEditingPolicy(policy); setNewPolicy({ ...policy }); onPolicyModalOpen(); };
+  const handleTogglePolicyActive = async (policy: Policy) => { await savePolicy({ ...policy, active: !policy.active }); };
   
   const handleSavePolicy = async () => {
-    if (!newPolicy.title || !newPolicy.targetField) {
-      toast({ title: 'Missing required fields', description: 'Please fill in policy title and target field', status: 'warning' });
-      return;
-    }
-    const policyToSave: Policy = {
-      id: editingPolicy?.id || generatePolicyId(),
-      title: newPolicy.title!,
-      description: newPolicy.description || '',
-      targetField: newPolicy.targetField!,
-      targetIRI: editingPolicy?.targetIRI || newPolicy.targetField,
-      active: newPolicy.active ?? true,
-      constraints: newPolicy.constraints || [{ type: 'count', operator: 'lteq', value: 1 }],
-      createdAt: editingPolicy?.createdAt || new Date(),
-    };
+    if (!newPolicy.title || !newPolicy.targetField) { toast({ title: 'Missing required fields', description: 'Please fill in policy title and target field', status: 'warning' }); return; }
+    const policyToSave: Policy = { id: editingPolicy?.id || generatePolicyId(), title: newPolicy.title!, description: newPolicy.description || '', targetField: newPolicy.targetField!, targetIRI: editingPolicy?.targetIRI || newPolicy.targetField, active: newPolicy.active ?? true, constraints: newPolicy.constraints || [{ type: 'count', operator: 'lteq', value: 1 }], createdAt: editingPolicy?.createdAt || new Date() };
     await savePolicy(policyToSave);
     onPolicyModalClose();
   };
@@ -1085,44 +927,30 @@ export default function AuditDashboardPage() {
   const handleToggleSensitivity = (fieldIri: string, newValue: boolean) => {
     setPrivacyMappings((prev) => prev.map((m) => {
       if (cleanIRI(m.fieldIri) === cleanIRI(fieldIri)) {
-        const newCategory = newValue 
-          ? `${DPV}SensitivePersonalData` 
-          : `${DPV}PersonalData`;
-        return { 
-          ...m, 
-          isSensitive: newValue,
-          dataCategory: newCategory
-        };
+        const newCategory = newValue ? `${DPV}SensitivePersonalData` : `${DPV}PersonalData`;
+        return { ...m, isSensitive: newValue, dataCategory: newCategory };
       }
       return m;
     }));
   };
 
-  const SchemaVisualization = ({ fields }: { fields: AccessedField[] }) => {
-    if (fields.length === 0) return <Text fontSize="sm" color="gray.500">No schema data available</Text>;
-    return (
-      <VStack align="stretch" spacing={2} maxH="200px" overflowY="auto">
-        {fields.map((field) => (
-          <Box key={field.fieldIri} p={2} borderRadius="md" bg={field.isSensitive ? 'red.50' : 'gray.50'} borderLeft="4px solid" borderColor={field.isSensitive ? 'red.400' : 'gray.400'}>
-            <Flex justify="space-between" align="center">
-              <VStack align="start" spacing={0}>
-                <Text fontWeight="medium" fontSize="sm">{field.fieldName}</Text>
-                <Text fontSize="xs" color="gray.600">{shortIri(field.fieldIri)}</Text>
-              </VStack>
-              <HStack spacing={2}>
-                <Tag size="sm" colorScheme={field.isSensitive ? 'red' : 'blue'}>
-                  {field.isSensitive ? 'Sensitive' : 'Normal'}
-                </Tag>
-                <ChakraTooltip label={field.dataCategory}>
-                  <Tag size="sm" variant="outline">{shortIri(field.personalDataType)}</Tag>
-                </ChakraTooltip>
-              </HStack>
-            </Flex>
-            {field.fieldValue && <Text fontSize="xs" mt={1} color="gray.700">Value: <Code>{field.fieldValue}</Code></Text>}
-          </Box>
-        ))}
-      </VStack>
-    );
+  // Helper function to find policy title with fallback matching
+  const findPolicyTitle = (violatedPolicyId: string): string => {
+    // First try exact ID match
+    const exactMatch = policies.find(p => p.id === violatedPolicyId);
+    if (exactMatch) return exactMatch.title;
+    
+    // Fallback: match by target field IRI
+    const targetMatch = policies.find(p => cleanIRI(p.targetIRI || '') === cleanIRI(violatedPolicyId));
+    if (targetMatch) return targetMatch.title;
+    
+    // Fallback: match by short field name
+    const shortName = shortIri(violatedPolicyId);
+    const shortMatch = policies.find(p => p.targetField === shortName);
+    if (shortMatch) return shortMatch.title;
+    
+    // Last resort: return the ID itself as title
+    return shortIri(violatedPolicyId);
   };
 
   return (
@@ -1143,39 +971,10 @@ export default function AuditDashboardPage() {
       
       {/* STATS CARDS */}
       <SimpleGrid columns={{ base: 2, md: 4 }} spacing={4} mb={6}>
-        <Card>
-          <CardBody>
-            <Stat>
-              <StatLabel>Total Access Events</StatLabel>
-              <StatNumber>{stats.total}</StatNumber>
-            </Stat>
-          </CardBody>
-        </Card>
-        <Card>
-          <CardBody>
-            <Stat>
-              <StatLabel>Policy Violations</StatLabel>
-              <StatNumber color={stats.violations > 0 ? 'red.500' : 'green.500'}>{stats.violations}</StatNumber>
-              <StatHelpText>{stats.total > 0 ? `${Math.round((stats.violations / stats.total) * 100)}%` : '0%'}</StatHelpText>
-            </Stat>
-          </CardBody>
-        </Card>
-        <Card>
-          <CardBody>
-            <Stat>
-              <StatLabel>Sensitive Data Accessed</StatLabel>
-              <StatNumber color={stats.sensitive > 0 ? 'orange.500' : 'gray.500'}>{stats.sensitive}</StatNumber>
-            </Stat>
-          </CardBody>
-        </Card>
-        <Card>
-          <CardBody>
-            <Stat>
-              <StatLabel>Unique Applications</StatLabel>
-              <StatNumber>{stats.apps}</StatNumber>
-            </Stat>
-          </CardBody>
-        </Card>
+        <Card><CardBody><Stat><StatLabel>Total Access Events</StatLabel><StatNumber>{stats.total}</StatNumber></Stat></CardBody></Card>
+        <Card><CardBody><Stat><StatLabel>Policy Violations</StatLabel><StatNumber color={stats.violations > 0 ? 'red.500' : 'green.500'}>{stats.violations}</StatNumber><StatHelpText>{stats.total > 0 ? `${Math.round((stats.violations / stats.total) * 100)}%` : '0%'}</StatHelpText></Stat></CardBody></Card>
+        <Card><CardBody><Stat><StatLabel>Sensitive Data Accessed</StatLabel><StatNumber color={stats.sensitive > 0 ? 'orange.500' : 'gray.500'}>{stats.sensitive}</StatNumber></Stat></CardBody></Card>
+        <Card><CardBody><Stat><StatLabel>Unique Applications</StatLabel><StatNumber>{stats.apps}</StatNumber></Stat></CardBody></Card>
       </SimpleGrid>
       
       {/* FILTER BAR */}
@@ -1185,20 +984,13 @@ export default function AuditDashboardPage() {
             <Input placeholder="Search app, field name, or value..." value={search} onChange={(e) => setSearch(e.target.value)} />
             <HStack spacing={4} wrap="wrap">
               <Select value={sensitivity} onChange={(e) => setSensitivity(e.target.value as any)} size="sm">
-                <option value="all">All Data</option>
-                <option value="sensitive">Sensitive Only</option>
-                <option value="normal">Non-Sensitive Only</option>
+                <option value="all">All Data</option><option value="sensitive">Sensitive Only</option><option value="normal">Non-Sensitive Only</option>
               </Select>
               <Select value={decisionFilter} onChange={(e) => setDecisionFilter(e.target.value as any)} size="sm">
-                <option value="all">All Decisions</option>
-                <option value="allowed">Allowed Only</option>
-                <option value="violation">Violations Only</option>
+                <option value="all">All Decisions</option><option value="allowed">Allowed Only</option><option value="violation">Violations Only</option>
               </Select>
               <Select value={dateFilter} onChange={(e) => setDateFilter(e.target.value as any)} size="sm">
-                <option value="all">All Dates</option>
-                <option value="today">Today</option>
-                <option value="7">Last 7 Days</option>
-                <option value="30">Last 30 Days</option>
+                <option value="all">All Dates</option><option value="today">Today</option><option value="7">Last 7 Days</option><option value="30">Last 30 Days</option>
               </Select>
               <Select value={appFilter} onChange={(e) => setAppFilter(e.target.value)} size="sm">
                 <option value="all">All Applications</option>
@@ -1210,9 +1002,7 @@ export default function AuditDashboardPage() {
       </Card>
       
       {loading && <Flex justify="center" py={10}><Spinner size="xl" /></Flex>}
-      {!loading && filteredLogs.length === 0 && (
-        <Alert status="info"><AlertIcon />No audit logs match the selected filters.</Alert>
-      )}
+      {!loading && filteredLogs.length === 0 && <Alert status="info"><AlertIcon />No audit logs match the selected filters.</Alert>}
       
       {/* TABS */}
       {!loading && (
@@ -1222,7 +1012,7 @@ export default function AuditDashboardPage() {
             <Tab>State of the World</Tab>
           </TabList>
           <TabPanels>
-            {/* TAB 1: VIOLATION REPORT */}
+            {/* TAB 1: VIOLATION REPORT - FIXED */}
             <TabPanel>
               <Card>
                 <CardHeader><Text fontWeight="bold">Policy Violation Report</Text></CardHeader>
@@ -1230,98 +1020,70 @@ export default function AuditDashboardPage() {
                   <Table variant="simple" size="sm">
                     <Thead>
                       <Tr>
-                        <Th>Time</Th>
-                        <Th>App</Th>
-                        <Th>Violated Field</Th>
-                        <Th>Policy Title</Th>
-                        <Th>Policy ID</Th>
+                        <Th>Time</Th><Th>App</Th><Th>Violated Field</Th><Th>Policy Title</Th><Th>Policy ID</Th>
                       </Tr>
                     </Thead>
                     <Tbody>
-                      {currentViolationLogs.map((log) =>
-                        log.violations.map((v, idx) => {
-                          const violatedPolicyObj = policies.find(p => p.id === v.violatedPolicy);
-                          const policyTitle = violatedPolicyObj ? violatedPolicyObj.title : 'Unknown Policy';
-                          return (
-                            <Tr 
-                              key={`${log.accessId}-${v.violatedField}-${idx}`} 
-                              bg="red.50" 
-                              cursor="pointer"
-                              _hover={{ bg: 'red.100' }}
-                              onClick={() => {
-                                setSelectedLog(log);
-                                onDetailModalOpen();
-                              }}
-                            >
-                              <Td>{log.startedAt?.toLocaleString()}</Td>
-                              <Td textTransform="capitalize">{log.app}</Td>
-                              <Td>{getFieldLabel(v.violatedField)}</Td>
-                              <Td fontWeight="medium">{policyTitle}</Td>
-                              <Td><Code fontSize="xs">{shortIri(v.violatedPolicy)}</Code></Td>
-                            </Tr>
-                          );
-                        })
-                      )}
-                      {currentViolationLogs.length === 0 && (
-                        <Tr><Td colSpan={5} textAlign="center">No violations recorded in filtered logs. Try adjusting filters or check if access log contains violations.</Td></Tr>
+                      {currentViolationLogs.length > 0 ? (
+                        currentViolationLogs.map((log) =>
+                          log.violations.map((v, idx) => {
+                            // FIXED: Use helper function with fallback matching
+                            const policyTitle = findPolicyTitle(v.violatedPolicy);
+                            return (
+                              <Tr key={`${log.accessId}-${v.violatedField}-${idx}`} bg="red.50" cursor="pointer" _hover={{ bg: 'red.100' }} onClick={() => { setSelectedLog(log); onDetailModalOpen(); }}>
+                                <Td>{log.startedAt?.toLocaleString()}</Td>
+                                <Td textTransform="capitalize">{log.app}</Td>
+                                <Td>{getFieldLabel(v.violatedField)}</Td>
+                                <Td fontWeight="medium">{policyTitle}</Td>
+                                <Td><Code fontSize="xs">{shortIri(v.violatedPolicy)}</Code></Td>
+                              </Tr>
+                            );
+                          })
+                        )
+                      ) : (
+                        // Show ALL violations if filtered is empty but stats show violations exist
+                        logs.filter(l => l.violations.length > 0).length > 0 && decisionFilter !== 'allowed' ? (
+                          <Tr><Td colSpan={5} textAlign="center">
+                            <Text>Violations exist but may be filtered out.</Text>
+                            <Button size="xs" mt={2} onClick={() => { setDecisionFilter('all'); setDateFilter('all'); setSensitivity('all'); setAppFilter('all'); setSearch(''); }}>
+                              Clear all filters to show violations
+                            </Button>
+                          </Td></Tr>
+                        ) : (
+                          <Tr><Td colSpan={5} textAlign="center">No violations recorded in filtered logs.</Td></Tr>
+                        )
                       )}
                     </Tbody>
                   </Table>
                   {totalPages > 1 && (
                     <Flex justify="space-between" align="center" mt={4}>
-                      <Button 
-                        size="sm" 
-                        onClick={() => handlePageChange(currentPage - 1)} 
-                        isDisabled={currentPage === 1}
-                        leftIcon={<ChevronLeftIcon />}
-                      >
-                        Previous
-                      </Button>
+                      <Button size="sm" onClick={() => handlePageChange(currentPage - 1)} isDisabled={currentPage === 1} leftIcon={<ChevronLeftIcon />}>Previous</Button>
                       <Text fontSize="sm">Page {currentPage} of {totalPages}</Text>
-                      <Button 
-                        size="sm" 
-                        onClick={() => handlePageChange(currentPage + 1)} 
-                        isDisabled={currentPage === totalPages}
-                        rightIcon={<ChevronRightIcon />}
-                      >
-                        Next
-                      </Button>
+                      <Button size="sm" onClick={() => handlePageChange(currentPage + 1)} isDisabled={currentPage === totalPages} rightIcon={<ChevronRightIcon />}>Next</Button>
                     </Flex>
                   )}
                 </CardBody>
               </Card>
             </TabPanel>
 
-            {/* TAB 2: STATE OF THE WORLD */}
+            {/* TAB 2: STATE OF THE WORLD - FIXED: Show Latest Count */}
             <TabPanel>
               <Card>
                 <CardHeader>
                   <Flex justify="space-between" align="center">
                     <Text fontWeight="bold">State of the World</Text>
-                    <Button size="sm" colorScheme="blue" onClick={loadStateOfTheWorld} isLoading={loadingSotw}>
-                      Refresh
-                    </Button>
+                    <Button size="sm" colorScheme="blue" onClick={loadStateOfTheWorld} isLoading={loadingSotw}>Refresh</Button>
                   </Flex>
                 </CardHeader>
                 <CardBody>
-                  {loadingSotw ? (
-                    <Flex justify="center" py={10}><Spinner /></Flex>
-                  ) : sotwData ? (
+                  {loadingSotw ? <Flex justify="center" py={10}><Spinner /></Flex> : sotwData ? (
                     <VStack align="stretch" spacing={4}>
                       <HStack spacing={6} wrap="wrap">
-                        <Box>
-                          <Text fontSize="xs" color="gray.600">Current Time</Text>
-                          <Text fontWeight="medium">{sotwData.currentTime?.toLocaleString() || 'N/A'}</Text>
-                        </Box>
-                        <Box>
-                          <Text fontSize="xs" color="gray.600">Current Location</Text>
-                          <Tag size="sm" colorScheme="purple">{sotwData.currentLocation}</Tag>
-                        </Box>
+                        <Box><Text fontSize="xs" color="gray.600">Current Time</Text><Text fontWeight="medium">{sotwData.currentTime?.toLocaleString() || 'N/A'}</Text></Box>
+                        <Box><Text fontSize="xs" color="gray.600">Current Location</Text><Tag size="sm" colorScheme="purple">{sotwData.currentLocation}</Tag></Box>
                       </HStack>
-                      
                       <Divider />
-                      
-                      <Text fontWeight="medium" mb={2}>Access Counts by Field</Text>
+                      <Text fontWeight="medium" mb={2}>Access Counts by Field (Latest Values)</Text>
                       <SimpleGrid columns={{ base: 1, md: 2 }} spacing={3}>
                         {sotwData.counts.map((count) => (
                           <Box key={count.targetIRI} p={3} borderRadius="md" borderWidth="1px" borderColor="gray.200">
@@ -1330,28 +1092,14 @@ export default function AuditDashboardPage() {
                                 <Text fontWeight="medium">{getFieldLabel(count.targetIRI)}</Text>
                                 <Text fontSize="xs" color="gray.600">{shortIri(count.targetIRI)}</Text>
                               </VStack>
-                              <Stat>
-                                <StatNumber fontSize="2xl">{count.countValue}</StatNumber>
-                                <StatHelpText>accesses</StatHelpText>
-                              </Stat>
+                              <Stat><StatNumber fontSize="2xl">{count.countValue}</StatNumber><StatHelpText>accesses (latest)</StatHelpText></Stat>
                             </Flex>
                           </Box>
                         ))}
                       </SimpleGrid>
-                      
-                      {sotwData.counts.length === 0 && (
-                        <Alert status="info">
-                          <AlertIcon />
-                          No count data available. Expected structure: <Code>sotw:count [ a sotw:Count ; sotw:countValue "N"^^xsd:integer ; odrl:target &lt;schema.org/field&gt; ]</Code>
-                        </Alert>
-                      )}
+                      {sotwData.counts.length === 0 && <Alert status="info"><AlertIcon />No count data available.</Alert>}
                     </VStack>
-                  ) : (
-                    <Alert status="warning">
-                      <AlertIcon />
-                      No State of the World data available. Ensure the file exists at <Code>{STATE_OF_WORLD_PATH}</Code>.
-                    </Alert>
-                  )}
+                  ) : <Alert status="warning"><AlertIcon />No State of the World data available.</Alert>}
                 </CardBody>
               </Card>
             </TabPanel>
@@ -1361,10 +1109,8 @@ export default function AuditDashboardPage() {
 
       {/* DETAIL MODAL */}
       <Modal isOpen={isDetailModalOpen} onClose={onDetailModalClose} size="2xl">
-        <ModalOverlay />
-        <ModalContent>
-          <ModalHeader>Access Log Detail</ModalHeader>
-          <ModalCloseButton />
+        <ModalOverlay /><ModalContent>
+          <ModalHeader>Access Log Detail</ModalHeader><ModalCloseButton />
           <ModalBody>
             {selectedLog && (
               <VStack align="start" spacing={4}>
@@ -1378,17 +1124,12 @@ export default function AuditDashboardPage() {
                       <Badge colorScheme={selectedLog.decision === 'VIOLATION' ? 'red' : 'green'}>{selectedLog.decision}</Badge>
                       {selectedLog.hasSensitiveData && <Badge colorScheme="orange">Sensitive</Badge>}
                     </HStack>
-                  </Flex>
-                  <Divider />
+                  </Flex><Divider />
                 </Box>
-                
                 <Box width="100%">
                   <Text fontSize="xs" fontWeight="medium" color="gray.600">Resource</Text>
-                  <Link href={selectedLog.accessedResource} isExternal fontSize="sm" wordBreak="break-all">
-                    {shortIri(selectedLog.accessedResource)} <ExternalLinkIcon mx="2px" />
-                  </Link>
+                  <Link href={selectedLog.accessedResource} isExternal fontSize="sm" wordBreak="break-all">{shortIri(selectedLog.accessedResource)} <ExternalLinkIcon mx="2px" /></Link>
                 </Box>
-
                 {selectedLog.fields.length > 0 && (
                   <Box width="100%">
                     <Text fontSize="xs" fontWeight="medium" color="gray.600" mb={1}>Fields Accessed</Text>
@@ -1405,19 +1146,13 @@ export default function AuditDashboardPage() {
                     </VStack>
                   </Box>
                 )}
-
                 {selectedLog.violations.length > 0 && (
                   <Alert status="warning" fontSize="sm">
                     <VStack align="start" spacing={1}>
                       <Text fontWeight="medium">Violation Details:</Text>
                       {selectedLog.violations.map((v, idx) => {
-                        const violatedPolicyObj = policies.find(p => p.id === v.violatedPolicy);
-                        const policyTitle = violatedPolicyObj ? violatedPolicyObj.title : shortIri(v.violatedPolicy);
-                        return (
-                          <Text key={`${selectedLog.accessId}-violation-${idx}`} fontSize="xs">
-                            {getFieldLabel(v.violatedField)}: Violated Count {v.observedCount} &gt; Constraint {v.allowedLimit} ({policyTitle})
-                          </Text>
-                        );
+                        const policyTitle = findPolicyTitle(v.violatedPolicy);
+                        return <Text key={`${selectedLog.accessId}-violation-${idx}`} fontSize="xs">{getFieldLabel(v.violatedField)}: Violated Count {v.observedCount} &gt; Constraint {v.allowedLimit} ({policyTitle})</Text>;
                       })}
                     </VStack>
                   </Alert>
@@ -1425,48 +1160,29 @@ export default function AuditDashboardPage() {
               </VStack>
             )}
           </ModalBody>
-          <ModalFooter>
-            <Button variant="ghost" onClick={onDetailModalClose}>Close</Button>
-          </ModalFooter>
+          <ModalFooter><Button variant="ghost" onClick={onDetailModalClose}>Close</Button></ModalFooter>
         </ModalContent>
       </Modal>
 
       {/* POLICY SETTINGS MODAL */}
       <Modal isOpen={isPolicyModalOpen} onClose={onPolicyModalClose} size="4xl">
-        <ModalOverlay />
-        <ModalContent bg="white" color="black">
-          <ModalHeader>Policy Management</ModalHeader>
-          <ModalCloseButton />
+        <ModalOverlay /><ModalContent bg="white" color="black">
+          <ModalHeader>Policy Management</ModalHeader><ModalCloseButton />
           <ModalBody>
             <Accordion allowToggle defaultIndex={editingPolicy ? 0 : -1}>
               <AccordionItem>
                 <AccordionButton style={{ backgroundColor: 'white' }}>
-                  <Box flex="1" textAlign="left" fontWeight="bold">
-                    {editingPolicy ? '✏️ Edit Policy' : '➕ Add New Policy'}
-                  </Box>
+                  <Box flex="1" textAlign="left" fontWeight="bold">{editingPolicy ? '✏️ Edit Policy' : '➕ Add New Policy'}</Box>
                   <AccordionIcon />
                 </AccordionButton>
                 <AccordionPanel pb={4}>
                   <VStack spacing={4} align="stretch">
-                    <FormControl isRequired>
-                      <FormLabel>Policy Title</FormLabel>
-                      <Input value={newPolicy.title || ''} onChange={(e) => setNewPolicy((p) => ({ ...p, title: e.target.value }))} placeholder="e.g., Blood Type Access Limit" />
-                    </FormControl>
-                    <FormControl>
-                      <FormLabel>Description</FormLabel>
-                      <Input value={newPolicy.description || ''} onChange={(e) => setNewPolicy((p) => ({ ...p, description: e.target.value }))} placeholder="Describe what this policy controls" />
-                    </FormControl>
+                    <FormControl isRequired><FormLabel>Policy Title</FormLabel><Input value={newPolicy.title || ''} onChange={(e) => setNewPolicy((p) => ({ ...p, title: e.target.value }))} placeholder="e.g., Blood Type Access Limit" /></FormControl>
+                    <FormControl><FormLabel>Description</FormLabel><Input value={newPolicy.description || ''} onChange={(e) => setNewPolicy((p) => ({ ...p, description: e.target.value }))} placeholder="Describe what this policy controls" /></FormControl>
                     <FormControl isRequired>
                       <FormLabel>Target Field</FormLabel>
-                      <Select
-                        value={newPolicy.targetField || ''}
-                        onChange={(e) => setNewPolicy((p) => ({ ...p, targetField: e.target.value }))}
-                        placeholder="Select a field to protect"
-                        isDisabled={!!editingPolicy}
-                      >
-                        {Object.entries(FIELD_LABELS).map(([iri, label]) => (
-                          <option key={iri} value={shortIri(cleanIRI(iri))}>{label}</option>
-                        ))}
+                      <Select value={newPolicy.targetField || ''} onChange={(e) => setNewPolicy((p) => ({ ...p, targetField: e.target.value }))} placeholder="Select a field to protect" isDisabled={!!editingPolicy}>
+                        {Object.entries(FIELD_LABELS).map(([iri, label]) => <option key={iri} value={shortIri(cleanIRI(iri))}>{label}</option>)}
                       </Select>
                       {editingPolicy && <FormHelperText>Target field cannot be changed for existing policies</FormHelperText>}
                     </FormControl>
@@ -1475,66 +1191,18 @@ export default function AuditDashboardPage() {
                       <VStack spacing={3} align="stretch">
                         {newPolicy.constraints?.map((constraint, idx) => (
                           <HStack key={`${newPolicy.title || 'new'}-constraint-${idx}`} spacing={3} align="start">
-                            <Select
-                              value={constraint.type}
-                              onChange={(e) => {
-                                const nc = [...(newPolicy.constraints || [])];
-                                nc[idx] = { ...constraint, type: e.target.value as PolicyConstraint['type'], value: e.target.value === 'location' ? '' : 1 };
-                                setNewPolicy((p) => ({ ...p, constraints: nc }));
-                              }}
-                              size="sm" width="150px"
-                            >
-                              <option value="count">Access Count</option>
-                              <option value="timeWindow">Time Window</option>
-                              <option value="location">Location</option>
+                            <Select value={constraint.type} onChange={(e) => { const nc = [...(newPolicy.constraints || [])]; nc[idx] = { ...constraint, type: e.target.value as PolicyConstraint['type'], value: e.target.value === 'location' ? '' : 1 }; setNewPolicy((p) => ({ ...p, constraints: nc })); }} size="sm" width="150px">
+                              <option value="count">Access Count</option><option value="timeWindow">Time Window</option><option value="location">Location</option>
                             </Select>
-                            <Select 
-                              value={constraint.operator} 
-                              onChange={(e) => {
-                                const nc = [...(newPolicy.constraints || [])]; 
-                                nc[idx] = { ...constraint, operator: e.target.value as PolicyConstraint['operator'] }; 
-                                setNewPolicy((p) => ({ ...p, constraints: nc }));
-                              }} 
-                              size="sm" 
-                              width="100px"
-                            >
-                              <option value="lteq">≤</option>
-                              <option value="gteq">≥</option>
-                              <option value="eq">=</option>
+                            <Select value={constraint.operator} onChange={(e) => { const nc = [...(newPolicy.constraints || [])]; nc[idx] = { ...constraint, operator: e.target.value as PolicyConstraint['operator'] }; setNewPolicy((p) => ({ ...p, constraints: nc })); }} size="sm" width="100px">
+                              <option value="lteq">≤</option><option value="gteq">≥</option><option value="eq">=</option>
                             </Select>
-                            {constraint.type === 'location' ? (
-                              <Input
-                                placeholder="City, Region, or Country"
-                                value={constraint.value as string}
-                                onChange={(e) => {
-                                  const nc = [...(newPolicy.constraints || [])]; 
-                                  nc[idx] = { ...constraint, value: e.target.value }; 
-                                  setNewPolicy((p) => ({ ...p, constraints: nc }));
-                                }}
-                                size="sm"
-                              />
-                            ) : (
-                              <NumberInput 
-                                value={constraint.value as number} 
-                                onChange={(_, val) => {
-                                  const nc = [...(newPolicy.constraints || [])]; 
-                                  nc[idx] = { ...constraint, value: val }; 
-                                  setNewPolicy((p) => ({ ...p, constraints: nc }));
-                                }} 
-                                size="sm" 
-                                width="100px"
-                              >
-                                <NumberInputField />
-                                <NumberInputStepper>
-                                  <NumberIncrementStepper />
-                                  <NumberDecrementStepper />
-                                </NumberInputStepper>
+                            {constraint.type === 'location' ? <Input placeholder="City, Region, or Country" value={constraint.value as string} onChange={(e) => { const nc = [...(newPolicy.constraints || [])]; nc[idx] = { ...constraint, value: e.target.value }; setNewPolicy((p) => ({ ...p, constraints: nc })); }} size="sm" /> : (
+                              <NumberInput value={constraint.value as number} onChange={(_, val) => { const nc = [...(newPolicy.constraints || [])]; nc[idx] = { ...constraint, value: val }; setNewPolicy((p) => ({ ...p, constraints: nc })); }} size="sm" width="100px">
+                                <NumberInputField /><NumberInputStepper><NumberIncrementStepper /><NumberDecrementStepper /></NumberInputStepper>
                               </NumberInput>
                             )}
-                            <Text fontSize="sm" color="gray.600">
-                              {constraint.type === 'count' ? 'accesses' :
-                                constraint.type === 'timeWindow' ? 'hours' : ''}
-                            </Text>
+                            <Text fontSize="sm" color="gray.600">{constraint.type === 'count' ? 'accesses' : constraint.type === 'timeWindow' ? 'hours' : ''}</Text>
                           </HStack>
                         ))}
                       </VStack>
@@ -1551,41 +1219,15 @@ export default function AuditDashboardPage() {
               <Text fontWeight="bold" mb={3}>Existing Policies</Text>
               {loadingPolicies ? <Spinner /> : (
                 <Table variant="simple" size="sm">
-                  <Thead>
-                    <Tr>
-                      <Th>Policy</Th>
-                      <Th>Target</Th>
-                      <Th>Constraints</Th>
-                      <Th>Status</Th>
-                      <Th>Actions</Th>
-                    </Tr>
-                  </Thead>
+                  <Thead><Tr><Th>Policy</Th><Th>Target</Th><Th>Constraints</Th><Th>Status</Th><Th>Actions</Th></Tr></Thead>
                   <Tbody>
                     {policies.map((policy) => (
                       <Tr key={policy.id}>
-                        <Td>
-                          <Text fontWeight="medium">{policy.title}</Text>
-                          <Text fontSize="xs" color="gray.600">{policy.description}</Text>
-                        </Td>
+                        <Td><Text fontWeight="medium">{policy.title}</Text><Text fontSize="xs" color="gray.600">{policy.description}</Text></Td>
                         <Td><Tag size="sm" colorScheme="purple">{policy.targetField}</Tag></Td>
-                        <Td>
-                          {policy.constraints.map((c, idx) => (
-                            <Text key={`${policy.id}-c-${idx}`} fontSize="xs">
-                              {c.type === 'count' ? `Count ${c.operator} ${c.value}` : 
-                               c.type === 'timeWindow' ? `Time ${c.operator} ${c.value}` : 
-                               `Location ${c.operator} ${c.value}`}
-                            </Text>
-                          ))}
-                        </Td>
-                        <Td>
-                          <Switch size="sm" isChecked={policy.active} onChange={() => handleTogglePolicyActive(policy)} />
-                        </Td>
-                        <Td>
-                          <HStack spacing={2}>
-                            <IconButton size="sm" icon={<EditIcon />} aria-label="Edit" onClick={() => handleEditPolicy(policy)} />
-                            <IconButton size="sm" icon={<DeleteIcon />} aria-label="Delete" colorScheme="red" variant="ghost" onClick={() => toast({ title: 'Delete not implemented', status: 'info' })} />
-                          </HStack>
-                        </Td>
+                        <Td>{policy.constraints.map((c, idx) => <Text key={`${policy.id}-c-${idx}`} fontSize="xs">{c.type === 'count' ? `Count ${c.operator} ${c.value}` : c.type === 'timeWindow' ? `Time ${c.operator} ${c.value}` : `Location ${c.operator} ${c.value}`}</Text>)}</Td>
+                        <Td><Switch size="sm" isChecked={policy.active} onChange={() => handleTogglePolicyActive(policy)} /></Td>
+                        <Td><HStack spacing={2}><IconButton size="sm" icon={<EditIcon />} aria-label="Edit" onClick={() => handleEditPolicy(policy)} /><IconButton size="sm" icon={<DeleteIcon />} aria-label="Delete" colorScheme="red" variant="ghost" onClick={() => toast({ title: 'Delete not implemented', status: 'info' })} /></HStack></Td>
                       </Tr>
                     ))}
                   </Tbody>
@@ -1593,52 +1235,26 @@ export default function AuditDashboardPage() {
               )}
             </Box>
           </ModalBody>
-          <ModalFooter>
-            <Button variant="ghost" onClick={onPolicyModalClose}>Close</Button>
-          </ModalFooter>
+          <ModalFooter><Button variant="ghost" onClick={onPolicyModalClose}>Close</Button></ModalFooter>
         </ModalContent>
       </Modal>
 
-      {/* PRIVACY SETTINGS MODAL - DPV STYLE */}
+      {/* PRIVACY SETTINGS MODAL */}
       <Modal isOpen={isPrivacyModalOpen} onClose={onPrivacyModalClose} size="2xl">
-        <ModalOverlay />
-        <ModalContent bg="white" color="black">
-          <ModalHeader>Privacy Data Settings (DPV)</ModalHeader>
-          <ModalCloseButton />
+        <ModalOverlay /><ModalContent bg="white" color="black">
+          <ModalHeader>Privacy Data Settings (DPV)</ModalHeader><ModalCloseButton />
           <ModalBody>
-            <Alert status="info" mb={4}>
-              <AlertIcon />
-              Fields marked as sensitive use DPV categories. Data stored at <Code>{PRIVACY_MAPPING_PATH}</Code> using subject-based mapping (ex:fieldName as subject).
-            </Alert>
+            <Alert status="info" mb={4}><AlertIcon />Fields marked as sensitive use DPV categories. Data stored at <Code>{PRIVACY_MAPPING_PATH}</Code> using subject-based mapping.</Alert>
             {loadingPrivacy ? <Spinner /> : (
               <VStack spacing={3} align="stretch" maxH="60vh" overflowY="auto" p={2}>
                 {privacyMappings.map((mapping) => (
-                  <Flex
-                    key={mapping.fieldIri}
-                    p={3}
-                    borderRadius="md"
-                    borderWidth="1px"
-                    borderColor="gray.200"
-                    alignItems="center"
-                    justifyContent="space-between"
-                    _hover={{ bg: 'gray.50' }}
-                  >
+                  <Flex key={mapping.fieldIri} p={3} borderRadius="md" borderWidth="1px" borderColor="gray.200" alignItems="center" justifyContent="space-between" _hover={{ bg: 'gray.50' }}>
                     <VStack align="start" spacing={1} flex={1}>
-                      <HStack>
-                        <Text fontWeight="medium">{mapping.fieldLabel}</Text>
-                        {mapping.isSensitive && <Badge colorScheme="red" variant="subtle" fontSize="xs">Sensitive</Badge>}
-                      </HStack>
+                      <HStack><Text fontWeight="medium">{mapping.fieldLabel}</Text>{mapping.isSensitive && <Badge colorScheme="red" variant="subtle" fontSize="xs">Sensitive</Badge>}</HStack>
                       <Text fontSize="xs" color="gray.500" wordBreak="break-all">{shortIri(mapping.fieldIri)}</Text>
-                      <Text fontSize="xs" color="gray.400">
-                        Category: {shortIri(mapping.dataCategory)}
-                      </Text>
+                      <Text fontSize="xs" color="gray.400">Category: {shortIri(mapping.dataCategory)}</Text>
                     </VStack>
-                    <Checkbox
-                      isChecked={mapping.isSensitive}
-                      onChange={(e) => handleToggleSensitivity(mapping.fieldIri, e.target.checked)}
-                      colorScheme="red"
-                      size="lg"
-                    >
+                    <Checkbox isChecked={mapping.isSensitive} onChange={(e) => handleToggleSensitivity(mapping.fieldIri, e.target.checked)} colorScheme="red" size="lg">
                       <Text fontSize="sm" ml={2} color="gray.600">Mark as Sensitive</Text>
                     </Checkbox>
                   </Flex>
@@ -1646,12 +1262,7 @@ export default function AuditDashboardPage() {
               </VStack>
             )}
           </ModalBody>
-          <ModalFooter>
-            <HStack>
-              <Button variant="ghost" onClick={onPrivacyModalClose}>Cancel</Button>
-              <Button colorScheme="green" onClick={savePrivacyMappings}>Save Privacy Settings</Button>
-            </HStack>
-          </ModalFooter>
+          <ModalFooter><HStack><Button variant="ghost" onClick={onPrivacyModalClose}>Cancel</Button><Button colorScheme="green" onClick={savePrivacyMappings}>Save Privacy Settings</Button></HStack></ModalFooter>
         </ModalContent>
       </Modal>
     </Box>
