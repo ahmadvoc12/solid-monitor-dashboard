@@ -553,6 +553,9 @@ export default function AuditDashboardPage() {
   const [loadingPrivacy, setLoadingPrivacy] = useState(false);
   const [availableFields, setAvailableFields] = useState<string[]>([]);
   
+  // State untuk menyimpan history pelanggaran sebuah App (untuk Modal)
+  const [selectedAppHistory, setSelectedAppHistory] = useState<{ appName: string; logs: AccessLogEntry[] } | null>(null);
+  
   const [search, setSearch] = useState('');
   const [sensitivity, setSensitivity] = useState<'all' | 'sensitive' | 'normal'>('all');
   const [dateFilter, setDateFilter] = useState<'all' | 'today' | '7' | '30'>('all');
@@ -561,7 +564,6 @@ export default function AuditDashboardPage() {
 
   const [currentPage, setCurrentPage] = useState(1);
   const rowsPerPage = 10;
-  const [selectedLog, setSelectedLog] = useState<AccessLogEntry | null>(null);
 
   const stats = useMemo(() => {
     const total = logs.length;
@@ -951,13 +953,14 @@ export default function AuditDashboardPage() {
     });
   }, [logs, search, sensitivity, dateFilter, appFilter, decisionFilter]);
 
-  // ✅ LOGIC BARU: Group violations by App and take only the latest one for the table
-  const latestViolationsByApp = useMemo(() => {
-    // Filter logs that are violations
+  // ✅ LOGIC: Group violation logs by App for Summary Table
+  const violationSummaryData = useMemo(() => {
+    // 1. Filter only violation logs
     const violationLogs = filteredLogs.filter((l) => l.decision === 'VIOLATION' || l.violations.length > 0);
     
     const grouped: Record<string, AccessLogEntry[]> = {};
 
+    // 2. Group by App Name
     violationLogs.forEach(log => {
       if (!grouped[log.app]) {
         grouped[log.app] = [];
@@ -965,27 +968,49 @@ export default function AuditDashboardPage() {
       grouped[log.app].push(log);
     });
 
-    // Sort each group by startedAt descending (newest first)
-    Object.keys(grouped).forEach(app => {
-      grouped[app].sort((a, b) => {
+    // 3. Transform to Summary Array
+    return Object.keys(grouped).map(appName => {
+      const appLogs = grouped[appName];
+      // Sort logs by time descending (newest first)
+      appLogs.sort((a, b) => {
         const timeA = a.startedAt ? a.startedAt.getTime() : 0;
         const timeB = b.startedAt ? b.startedAt.getTime() : 0;
-        return timeB - timeA; // Descending
+        return timeB - timeA;
       });
-    });
 
-    // Return only the first (latest) entry for each app
-    return Object.values(grouped).map(group => group[0]);
+      const latestLog = appLogs[0];
+      const violatedPolicyId = latestLog.violations.length > 0 ? latestLog.violations[0].violatedPolicy : 'unknown';
+      
+      return {
+        appName,
+        count: appLogs.length,
+        latestTime: latestLog.startedAt,
+        violatedPolicyId,
+        logs: appLogs // Keep logs for modal
+      };
+    });
   }, [filteredLogs]);
 
-  const totalPages = Math.ceil(latestViolationsByApp.length / rowsPerPage);
-  const currentViolationLogs = useMemo(() => {
+  const totalPages = Math.ceil(violationSummaryData.length / rowsPerPage);
+  const currentSummaryData = useMemo(() => {
     const start = (currentPage - 1) * rowsPerPage;
-    return latestViolationsByApp.slice(start, start + rowsPerPage);
-  }, [latestViolationsByApp, currentPage]);
+    return violationSummaryData.slice(start, start + rowsPerPage);
+  }, [violationSummaryData, currentPage]);
 
   const handlePageChange = (newPage: number) => {
     if (newPage >= 1 && newPage <= totalPages) setCurrentPage(newPage);
+  };
+
+  // Handler to open Modal with History
+  const handleViewHistory = (appName: string) => {
+    const summaryItem = violationSummaryData.find(item => item.appName === appName);
+    if (summaryItem) {
+      setSelectedAppHistory({
+        appName: summaryItem.appName,
+        logs: summaryItem.logs
+      });
+      onDetailModalOpen();
+    }
   };
 
   const findPolicyByViolation = (violatedPolicyIri: string): Policy | undefined => {
@@ -1111,16 +1136,16 @@ export default function AuditDashboardPage() {
       {!loading && (
         <Tabs variant="enclosed">
           <TabList>
-            <Tab>Latest Violations by App</Tab>
+            <Tab>Violation Summary (Per App)</Tab>
             <Tab>State of the World</Tab>
           </TabList>
           <TabPanels>
-            {/* TAB 1: VIOLATION REPORT - PER APP LATEST */}
+            {/* TAB 1: VIOLATION SUMMARY TABLE */}
             <TabPanel>
               <Card>
                 <CardHeader>
                   <Flex justify="space-between" align="center">
-                    <Text fontWeight="bold">Latest Violations by App</Text>
+                    <Text fontWeight="bold">Violation Summary by Application</Text>
                     <Button size="sm" leftIcon={<RepeatIcon />} onClick={loadAccessLogs} isLoading={loading}>
                       Refresh
                     </Button>
@@ -1130,33 +1155,36 @@ export default function AuditDashboardPage() {
                   <Table variant="simple" size="sm">
                     <Thead>
                       <Tr>
-                        <Th>Application</Th>
+                        <Th>Application Name</Th>
+                        <Th>Total Violations</Th>
                         <Th>Last Violation Time</Th>
-                        <Th>Violated Fields Summary</Th>
-                        <Th>Policy Title</Th>
+                        <Th>Last Policy Violated</Th>
                         <Th>Action</Th>
                       </Tr>
                     </Thead>
                     <Tbody>
-                      {currentViolationLogs.length > 0 ? (
-                        currentViolationLogs.map((log) => {
-                           // Summarize violated fields for this log entry
-                           const violatedFieldsSummary = log.violations.length > 0
-                            ? log.violations.map(v => getFieldLabel(v.violatedField)).join(', ')
-                            : (log.fields.length > 0 ? log.fields.map(f => f.fieldName).join(', ') : 'Unknown Fields');
-                            
-                           // Get a representative policy title
-                           const violatedPolicyId = log.violations.length > 0 ? log.violations[0].violatedPolicy : 'general';
-                           const matchedPolicy = findPolicyByViolation(violatedPolicyId);
-                           const policyTitle = matchedPolicy ? matchedPolicy.title : 'Unknown Policy';
+                      {currentSummaryData.length > 0 ? (
+                        currentSummaryData.map((item) => {
+                          const matchedPolicy = findPolicyByViolation(item.violatedPolicyId);
+                          const policyTitle = matchedPolicy ? matchedPolicy.title : 'Unknown Policy';
 
-                           return (
-                            <Tr key={log.id} bg="red.50" _hover={{ bg: 'red.100' }} cursor="pointer" onClick={() => { setSelectedLog(log); onDetailModalOpen(); }}>
-                              <Td fontWeight="bold" textTransform="capitalize">{log.app}</Td>
-                              <Td>{log.startedAt?.toLocaleString()}</Td>
-                              <Td maxW="300px" isTruncated>{violatedFieldsSummary}</Td>
+                          return (
+                            <Tr key={item.appName} bg="red.50" _hover={{ bg: 'red.100' }} cursor="pointer">
+                              <Td fontWeight="bold" textTransform="capitalize">{item.appName}</Td>
+                              <Td>
+                                <Badge colorScheme="red">{item.count}</Badge>
+                              </Td>
+                              <Td>{item.latestTime?.toLocaleString()}</Td>
                               <Td>{policyTitle}</Td>
-                              <Td><Button size="xs" colorScheme="blue">View Detail</Button></Td>
+                              <Td>
+                                <Button 
+                                  size="xs" 
+                                  colorScheme="blue" 
+                                  onClick={() => handleViewHistory(item.appName)}
+                                >
+                                  View History
+                                </Button>
+                              </Td>
                             </Tr>
                           );
                         })
@@ -1189,7 +1217,7 @@ export default function AuditDashboardPage() {
               </Card>
             </TabPanel>
 
-            {/* TAB 2: STATE OF THE WORLD - TABLE FORMAT */}
+            {/* TAB 2: STATE OF THE WORLD */}
             <TabPanel>
               <Card>
                 <CardHeader>
@@ -1250,75 +1278,87 @@ export default function AuditDashboardPage() {
         </Tabs>
       )}
 
-      {/* DETAIL MODAL - WHITE BACKGROUND */}
-      <Modal isOpen={isDetailModalOpen} onClose={onDetailModalClose} size="2xl">
+      {/* MODAL HISTORY / DETAIL - WHITE BACKGROUND */}
+      <Modal isOpen={isDetailModalOpen} onClose={onDetailModalClose} size="4xl">
         <ModalOverlay />
         <ModalContent bg="white" color="gray.800">
-          <ModalHeader borderBottom="1px solid" borderColor="gray.200">Access Log Detail</ModalHeader>
+          <ModalHeader borderBottom="1px solid" borderColor="gray.200">
+            Violation History: {selectedAppHistory?.appName}
+          </ModalHeader>
           <ModalCloseButton />
-          <ModalBody>
-            {selectedLog && (
-              <VStack align="start" spacing={4}>
-                <Box width="100%">
-                  <Flex justify="space-between" align="start" mb={2}>
-                    <VStack align="start" spacing={1}>
-                      <Text fontSize="lg" fontWeight="bold" textTransform="capitalize">{selectedLog.app}</Text>
-                      <Text fontSize="sm" color="gray.600">{selectedLog.accessMethod} • {selectedLog.startedAt?.toLocaleString()}</Text>
-                    </VStack>
-                    <HStack>
-                      <Badge colorScheme={selectedLog.decision === 'VIOLATION' ? 'red' : 'green'} variant="solid">{selectedLog.decision}</Badge>
-                      {selectedLog.hasSensitiveData && <Badge colorScheme="orange" variant="solid">Sensitive</Badge>}
-                    </HStack>
-                  </Flex>
-                  <Divider />
-                </Box>
-                
-                <Box width="100%">
-                  <Text fontSize="xs" fontWeight="bold" color="gray.600" mb={1}>RESOURCE</Text>
-                  <Link href={selectedLog.accessedResource} isExternal fontSize="sm" color="blue.600" wordBreak="break-all">
-                    {shortIri(selectedLog.accessedResource)} <ExternalLinkIcon mx="2px" />
-                  </Link>
-                </Box>
+          <ModalBody pb={6}>
+            {selectedAppHistory && (
+              <VStack align="stretch" spacing={4}>
+                <Text fontSize="sm" color="gray.600">
+                  Showing detailed history of {selectedAppHistory.logs.length} violation(s) for this application.
+                </Text>
 
-                {selectedLog.fields.length > 0 && (
-                  <Box width="100%">
-                    <Text fontSize="xs" fontWeight="bold" color="gray.600" mb={2}>FIELDS ACCESSED</Text>
+                {/* HISTORY TABLE INSIDE MODAL */}
+                <Table variant="simple" size="sm">
+                  <Thead bg="gray.50">
+                    <Tr>
+                      <Th>Time</Th>
+                      <Th>Violated Fields</Th>
+                      <Th>Policy</Th>
+                      <Th>Details</Th>
+                    </Tr>
+                  </Thead>
+                  <Tbody>
+                    {selectedAppHistory.logs.map((log) => (
+                      <Tr key={log.id}>
+                        <Td>{log.startedAt?.toLocaleString()}</Td>
+                        <Td>
+                          {log.violations.length > 0 
+                            ? log.violations.map(v => getFieldLabel(v.violatedField)).join(', ')
+                            : 'General / No Fields'
+                          }
+                        </Td>
+                        <Td>
+                           {log.violations.length > 0 && log.violations[0].violatedPolicy ? (
+                              <Text fontWeight="medium">
+                                {findPolicyByViolation(log.violations[0].violatedPolicy)?.title || shortIri(log.violations[0].violatedPolicy)}
+                              </Text>
+                           ) : 'Unknown'}
+                        </Td>
+                        <Td>
+                           <Button size="xs" variant="outline" onClick={() => {
+                             // Optional: Add logic to show specific row detail if needed, 
+                             // currently we show summary in columns
+                           }}>
+                             View Fields
+                           </Button>
+                        </Td>
+                      </Tr>
+                    ))}
+                  </Tbody>
+                </Table>
+
+                {/* DETAILED FIELD LIST (Inline) */}
+                <Divider />
+                <Text fontWeight="bold" fontSize="md">Accessed Fields Breakdown</Text>
+                {selectedAppHistory.logs.map((log, idx) => (
+                  <Box key={log.id} p={4} border="1px solid" borderColor="gray.200" borderRadius="md">
+                    <Flex justify="space-between" mb={2}>
+                        <Text fontWeight="bold" fontSize="sm">Event #{idx + 1} - {log.startedAt?.toLocaleString()}</Text>
+                        <Badge colorScheme="red">VIOLATION</Badge>
+                    </Flex>
                     <VStack align="stretch" spacing={2}>
-                      {selectedLog.fields.map((f) => (
-                        <Box key={f.fieldIri} p={3} borderRadius="md" bg={f.isSensitive ? 'red.50' : 'gray.50'} borderLeft="4px solid" borderColor={f.isSensitive ? 'red.400' : 'gray.400'}>
-                          <Flex justify="space-between">
-                            <Text fontSize="sm" fontWeight="bold">{f.fieldName}</Text>
-                            <Tag size="sm" colorScheme={f.isSensitive ? 'red' : 'blue'}>{f.isSensitive ? 'Sensitive' : 'Normal'}</Tag>
-                          </Flex>
-                          <Text fontSize="xs" mt={1} color="gray.600">Value: <Code bg="white" px={1}>{f.fieldValue}</Code></Text>
-                        </Box>
+                      {log.fields.map((f) => (
+                        <Flex key={f.fieldIri} justify="space-between" bg="gray.50" p={2} borderRadius="sm">
+                           <Box>
+                             <Text fontSize="sm" fontWeight="medium">{f.fieldName}</Text>
+                             <Text fontSize="xs" color="gray.500">{shortIri(f.fieldIri)}</Text>
+                           </Box>
+                           <Box textAlign="right">
+                             <Text fontSize="sm" fontWeight="bold">{f.fieldValue}</Text>
+                             <Tag size="xs" colorScheme={f.isSensitive ? 'red' : 'gray'}>{f.isSensitive ? 'Sensitive' : 'Normal'}</Tag>
+                           </Box>
+                        </Flex>
                       ))}
+                      {log.fields.length === 0 && <Text fontSize="sm" color="gray.500" fontStyle="italic">No field details recorded.</Text>}
                     </VStack>
                   </Box>
-                )}
-
-                {selectedLog.violations.length > 0 && (
-                  <Box width="100%">
-                    <Text fontSize="xs" fontWeight="bold" color="gray.600" mb={2}>VIOLATION DETAILS</Text>
-                    <Alert status="warning" variant="left-accent" flexDirection="column" alignItems="flex-start">
-                      <VStack align="start" spacing={2} width="100%">
-                        {selectedLog.violations.map((v, idx) => {
-                          const matchedPolicy = findPolicyByViolation(v.violatedPolicy);
-                          const policyTitle = matchedPolicy ? matchedPolicy.title : shortIri(v.violatedPolicy);
-                          return (
-                            <Box key={`${selectedLog.accessId}-violation-${idx}`} width="100%">
-                              <Flex justify="space-between" width="100%">
-                                <Text fontWeight="bold" fontSize="sm">{getFieldLabel(v.violatedField)}</Text>
-                                <Badge>{policyTitle}</Badge>
-                              </Flex>
-                              <Text fontSize="xs">Observed: {v.observedCount} > Allowed: {v.allowedLimit}</Text>
-                            </Box>
-                          );
-                        })}
-                      </VStack>
-                    </Alert>
-                  </Box>
-                )}
+                ))}
               </VStack>
             )}
           </ModalBody>
@@ -1328,7 +1368,7 @@ export default function AuditDashboardPage() {
         </ModalContent>
       </Modal>
 
-      {/* POLICY SETTINGS MODAL - WHITE BACKGROUND */}
+      {/* POLICY SETTINGS MODAL */}
       <Modal isOpen={isPolicyModalOpen} onClose={onPolicyModalClose} size="4xl">
         <ModalOverlay />
         <ModalContent bg="white" color="gray.800">
@@ -1382,7 +1422,7 @@ export default function AuditDashboardPage() {
               </AccordionItem>
             </Accordion>
             <Box mt={6}>
-              <Text fontWeight="bold" mb={3}>Existing Policies</Text>
+              <Text fontWeight="bold" mb={3">Existing Policies</Text>
               {loadingPolicies ? <Spinner /> : (
                 <Table variant="simple" size="sm">
                   <Thead><Tr><Th>Policy</Th><Th>Target</Th><Th>Constraints</Th><Th>Status</Th><Th>Actions</Th></Tr></Thead>
@@ -1407,7 +1447,7 @@ export default function AuditDashboardPage() {
         </ModalContent>
       </Modal>
 
-      {/* PRIVACY SETTINGS MODAL - WHITE BACKGROUND */}
+      {/* PRIVACY SETTINGS MODAL */}
       <Modal isOpen={isPrivacyModalOpen} onClose={onPrivacyModalClose} size="2xl">
         <ModalOverlay />
         <ModalContent bg="white" color="gray.800">
