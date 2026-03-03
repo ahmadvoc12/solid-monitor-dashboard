@@ -261,7 +261,7 @@ type PolicyEvaluation = {
 
 type FieldViolation = {
   violatedField: string;
-  violatedPolicy: string; // This holds the dct:identifier value (e.g., "urn:uuid:...")
+  violatedPolicy: string;
   observedCount: number;
   allowedLimit: number;
 };
@@ -290,8 +290,8 @@ type PolicyConstraint = {
 
 // ✅ UPDATED: Added identifier field for dct:identifier matching
 type Policy = {
-  id: string; // The subject URL of the policy thing
-  identifier?: string; // ✅ NEW: dct:identifier value (e.g., "urn:uuid:...")
+  id: string;
+  identifier?: string;
   title: string;
   description: string;
   targetField: string;
@@ -400,7 +400,6 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
           if (fvThing) {
             violations.push({
               violatedField: cleanIRI(getUrlAll(fvThing, `${FORCE}violatedField`)[0] ?? ''),
-              // ✅ violatedPolicy now holds the dct:identifier value (URN UUID)
               violatedPolicy: cleanIRI(getUrlAll(fvThing, `${FORCE}violatedPolicy`)[0] ?? ''),
               observedCount: getInteger(fvThing, `${FORCE}observedCount`) ?? 0,
               allowedLimit: getInteger(fvThing, `${FORCE}allowedLimit`) ?? 0,
@@ -411,7 +410,7 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
     }
     
     if (violations.length > 0) {
-      console.log('🔍 Found violations for access:', accessId, violations);
+      console.log('🔍 Found explicit violations for access:', accessId, violations);
     }
     
     return {
@@ -560,7 +559,6 @@ export default function AuditDashboardPage() {
   const [loadingPrivacy, setLoadingPrivacy] = useState(false);
   const [availableFields, setAvailableFields] = useState<string[]>([]);
   
-  // State untuk menyimpan history pelanggaran sebuah App (untuk Modal)
   const [selectedAppHistory, setSelectedAppHistory] = useState<{ appName: string; logs: AccessLogEntry[] } | null>(null);
   
   const [search, setSearch] = useState('');
@@ -692,7 +690,7 @@ export default function AuditDashboardPage() {
 
   useEffect(() => { loadStateOfTheWorld(); }, [session]);
 
-  /* ========================= LOAD POLICIES - FIXED: Extract dct:identifier ========================= */
+  /* ========================= LOAD POLICIES ========================= */
   const loadPolicies = async () => {
     if (!session?.info?.webId) return;
     setLoadingPolicies(true);
@@ -709,7 +707,7 @@ export default function AuditDashboardPage() {
         const title = getStringNoLocaleAll(thing, `${DCT}title`)[0] || 'Untitled Policy';
         const description = getStringNoLocaleAll(thing, `${DCT}description`)[0] || '';
         
-        // ✅ NEW: Extract dct:identifier for matching with violatedPolicy
+        // ✅ Extract dct:identifier for matching
         const identifier = getStringNoLocaleAll(thing, `${DCT}identifier`)[0];
         
         const target = cleanIRI(getUrlAll(thing, `${ODRL}target`)[0] || '');
@@ -743,7 +741,7 @@ export default function AuditDashboardPage() {
         
         parsed.push({
           id: thing.url,
-          identifier, // ✅ Store dct:identifier for matching
+          identifier,
           title,
           description,
           targetField: shortIri(target),
@@ -754,6 +752,7 @@ export default function AuditDashboardPage() {
         });
       });
       setPolicies(parsed);
+      console.log('✅ Loaded policies:', parsed.map(p => ({ title: p.title, identifier: p.identifier, targetIRI: p.targetIRI })));
     } catch (err) {
       console.error('Failed to load policies:', err);
       setPolicies([
@@ -845,7 +844,6 @@ export default function AuditDashboardPage() {
       policyThing = setStringNoLocale(policyThing, `${DCT}title`, policy.title);
       policyThing = setStringNoLocale(policyThing, `${DCT}description`, policy.description || '');
       
-      // ✅ Save dct:identifier if provided
       if (policy.identifier) {
         policyThing = setStringNoLocale(policyThing, `${DCT}identifier`, policy.identifier);
       }
@@ -977,8 +975,9 @@ export default function AuditDashboardPage() {
     });
   }, [logs, search, sensitivity, dateFilter, appFilter, decisionFilter]);
 
-  // LOGIC: Group violation logs by App for Summary Table
+  // ✅ LOGIC: Group violation logs by App for Summary Table
   const violationSummaryData = useMemo(() => {
+    // Filter logs with decision VIOLATION or explicit violations
     const violationLogs = filteredLogs.filter((l) => l.decision === 'VIOLATION' || l.violations.length > 0);
     const grouped: Record<string, AccessLogEntry[]> = {};
     
@@ -997,7 +996,19 @@ export default function AuditDashboardPage() {
         return timeB - timeA;
       });
       const latestLog = appLogs[0];
-      const violatedPolicyId = latestLog.violations.length > 0 ? latestLog.violations[0].violatedPolicy : 'unknown';
+      
+      // ✅ Get violated policy from explicit violations OR from sensitive fields
+      let violatedPolicyId = 'unknown';
+      if (latestLog.violations.length > 0) {
+        violatedPolicyId = latestLog.violations[0].violatedPolicy;
+      } else if (latestLog.fields.some(f => f.isSensitive)) {
+        // Use the first sensitive field's IRI as the violated policy identifier
+        const firstSensitiveField = latestLog.fields.find(f => f.isSensitive);
+        if (firstSensitiveField) {
+          violatedPolicyId = firstSensitiveField.fieldIri;
+        }
+      }
+      
       return {
         appName,
         count: appLogs.length,
@@ -1029,29 +1040,45 @@ export default function AuditDashboardPage() {
     }
   };
 
-  // ✅ FIXED: Helper function to match violatedPolicy (dct:identifier URN) with policy.identifier
+  // ✅ FIXED: Helper function to match violatedPolicy with policy.identifier OR policy.targetIRI
   const findPolicyByViolation = (violatedPolicyIdentifier: string): Policy | undefined => {
+    if (!violatedPolicyIdentifier || violatedPolicyIdentifier === 'unknown') return undefined;
+    
     const cleanIdentifier = cleanIRI(violatedPolicyIdentifier);
+    
+    console.log('🔍 Finding policy for violated identifier:', cleanIdentifier);
+    console.log('Available policies:', policies.map(p => ({ 
+      title: p.title, 
+      identifier: p.identifier, 
+      targetIRI: p.targetIRI,
+      targetField: p.targetField 
+    })));
     
     // 1. Match by dct:identifier (URN UUID) - PRIMARY MATCH
     const byIdentifier = policies.find(p => 
       p.identifier && cleanIRI(p.identifier) === cleanIdentifier
     );
-    if (byIdentifier) return byIdentifier;
+    if (byIdentifier) {
+      console.log('✅ Matched by identifier:', byIdentifier.title);
+      return byIdentifier;
+    }
     
-    // 2. Fallback: Match by policy subject URL (old behavior)
-    const exact = policies.find(p => p.id === cleanIdentifier || p.id === violatedPolicyIdentifier);
-    if (exact) return exact;
-    
-    // 3. Fallback: Match by targetIRI
+    // 2. Match by targetIRI (e.g., https://schema.org/bloodType)
     const byTarget = policies.find(p => cleanIRI(p.targetIRI || '') === cleanIdentifier);
-    if (byTarget) return byTarget;
+    if (byTarget) {
+      console.log('✅ Matched by targetIRI:', byTarget.title);
+      return byTarget;
+    }
     
-    // 4. Fallback: Match by targetField short name
+    // 3. Match by targetField short name (e.g., "bloodType")
     const shortName = shortIri(cleanIdentifier);
     const byShort = policies.find(p => p.targetField === shortName);
-    if (byShort) return byShort;
+    if (byShort) {
+      console.log('✅ Matched by targetField:', byShort.title);
+      return byShort;
+    }
     
+    console.log('❌ No matching policy found');
     return undefined;
   };
 
@@ -1078,7 +1105,7 @@ export default function AuditDashboardPage() {
     }
     const policyToSave: Policy = {
       id: editingPolicy?.id || generatePolicyId(),
-      identifier: editingPolicy?.identifier, // Preserve identifier when editing
+      identifier: editingPolicy?.identifier,
       title: newPolicy.title!,
       description: newPolicy.description || '',
       targetField: newPolicy.targetField!,
@@ -1187,14 +1214,13 @@ export default function AuditDashboardPage() {
                         <Th>Total Violations</Th>
                         <Th>Last Violation Time</Th>
                         <Th>Last Policy Violated</Th>
-                        <Th>Policy ID</Th>
+                        <Th>Policy Identifier</Th>
                         <Th>Action</Th>
                       </Tr>
                     </Thead>
                     <Tbody>
                       {currentSummaryData.length > 0 ? (
                         currentSummaryData.map((item) => {
-                          // ✅ Use updated helper that matches by dct:identifier
                           const matchedPolicy = findPolicyByViolation(item.violatedPolicyId);
                           const policyTitle = matchedPolicy ? matchedPolicy.title : 'Unknown Policy';
                           const policyIdentifier = matchedPolicy?.identifier || shortIri(item.violatedPolicyId);
@@ -1334,37 +1360,44 @@ export default function AuditDashboardPage() {
                     </Tr>
                   </Thead>
                   <Tbody>
-                    {selectedAppHistory.logs.map((log) => (
-                      <Tr key={log.id}>
-                        <Td>{log.startedAt?.toLocaleString()}</Td>
-                        <Td>
-                          {log.violations.length > 0
-                            ? log.violations.map(v => getFieldLabel(v.violatedField)).join(', ')
-                            : 'General / No Fields'
-                          }
-                        </Td>
-                        <Td>
-                          {log.violations.length > 0 && log.violations[0].violatedPolicy ? (
-                            <Text fontWeight="medium">
-                              {/* ✅ Use updated helper for matching */}
-                              {findPolicyByViolation(log.violations[0].violatedPolicy)?.title || 'Unknown Policy'}
-                            </Text>
-                          ) : 'Unknown'}
-                        </Td>
-                        <Td>
-                          {log.violations.length > 0 && log.violations[0].violatedPolicy ? (
-                            <Code fontSize="xs">
-                              {findPolicyByViolation(log.violations[0].violatedPolicy)?.identifier || shortIri(log.violations[0].violatedPolicy)}
-                            </Code>
-                          ) : 'N/A'}
-                        </Td>
-                        <Td>
-                          <Button size="xs" variant="outline" onClick={() => {}}>
-                            View Fields
-                          </Button>
-                        </Td>
-                      </Tr>
-                    ))}
+                    {selectedAppHistory.logs.map((log) => {
+                      // ✅ Get violated policy from explicit violations OR from sensitive fields
+                      let violatedPolicyId = 'unknown';
+                      if (log.violations.length > 0) {
+                        violatedPolicyId = log.violations[0].violatedPolicy;
+                      } else if (log.fields.some(f => f.isSensitive)) {
+                        const firstSensitiveField = log.fields.find(f => f.isSensitive);
+                        if (firstSensitiveField) {
+                          violatedPolicyId = firstSensitiveField.fieldIri;
+                        }
+                      }
+                      
+                      const matchedPolicy = findPolicyByViolation(violatedPolicyId);
+                      const policyTitle = matchedPolicy ? matchedPolicy.title : 'Unknown Policy';
+                      const policyIdentifier = matchedPolicy?.identifier || shortIri(violatedPolicyId);
+                      
+                      // ✅ Get violated fields from explicit violations OR from sensitive fields
+                      let violatedFieldsText = 'General / No Fields';
+                      if (log.violations.length > 0) {
+                        violatedFieldsText = log.violations.map(v => getFieldLabel(v.violatedField)).join(', ');
+                      } else if (log.fields.some(f => f.isSensitive)) {
+                        violatedFieldsText = log.fields.filter(f => f.isSensitive).map(f => f.fieldName).join(', ');
+                      }
+                      
+                      return (
+                        <Tr key={log.id}>
+                          <Td>{log.startedAt?.toLocaleString()}</Td>
+                          <Td>{violatedFieldsText}</Td>
+                          <Td><Text fontWeight="medium">{policyTitle}</Text></Td>
+                          <Td><Code fontSize="xs">{policyIdentifier}</Code></Td>
+                          <Td>
+                            <Button size="xs" variant="outline" onClick={() => {}}>
+                              View Fields
+                            </Button>
+                          </Td>
+                        </Tr>
+                      );
+                    })}
                   </Tbody>
                 </Table>
                 {/* DETAILED FIELD LIST (Inline) */}
@@ -1419,7 +1452,6 @@ export default function AuditDashboardPage() {
                   <VStack spacing={4} align="stretch">
                     <FormControl isRequired><FormLabel>Policy Title</FormLabel><Input value={newPolicy.title || ''} onChange={(e) => setNewPolicy((p) => ({ ...p, title: e.target.value }))} placeholder="e.g., Blood Type Access Limit" /></FormControl>
                     <FormControl><FormLabel>Description</FormLabel><Input value={newPolicy.description || ''} onChange={(e) => setNewPolicy((p) => ({ ...p, description: e.target.value }))} placeholder="Describe what this policy controls" /></FormControl>
-                    {/* ✅ NEW: Identifier field for dct:identifier */}
                     <FormControl>
                       <FormLabel>Policy Identifier (dct:identifier)</FormLabel>
                       <Input 
