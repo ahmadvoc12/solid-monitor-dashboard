@@ -1422,7 +1422,7 @@ export default function AuditDashboardPage() {
               </AccordionItem>
             </Accordion>
             <Box mt={6}>
-              <Text fontWeight="bold" mb={3">Existing Policies</Text>
+              <Text fontWeight="bold" mb={3}>Existing Policies</Text>
               {loadingPolicies ? <Spinner /> : (
                 <Table variant="simple" size="sm">
                   <Thead><Tr><Th>Policy</Th><Th>Target</Th><Th>Constraints</Th><Th>Status</Th><Th>Actions</Th></Tr></Thead>
