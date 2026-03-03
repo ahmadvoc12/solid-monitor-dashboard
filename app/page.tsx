@@ -72,8 +72,9 @@ import {
   ExternalLinkIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  RepeatIcon,
 } from '@chakra-ui/icons';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useSolidSession } from '@/contexts/SolidSessionContext';
 import {
@@ -96,7 +97,6 @@ import {
   setInteger,
   ThingPersisted,
   SolidDataset,
-  // isNamedNode DIHAPUS: tidak tersedia di @inrupt/solid-client
 } from '@inrupt/solid-client';
 
 /* ======================================================
@@ -123,7 +123,7 @@ const PRIVACY_MAPPING_PATH = 'private/dpv-mapping.ttl';
 const STATE_OF_WORLD_PATH = 'private/audit/monitoring/state-of-the-world.ttl';
 
 /* ======================================================
-FIELD LABEL MAPPING (Schema.org -> Label)
+FIELD LABEL MAPPING
 ====================================================== */
 const FIELD_LABELS: Record<string, string> = {
   'https://schema.org/bloodType': 'Blood Type',
@@ -151,35 +151,26 @@ UTILS
 function cleanIRI(iri: string): string {
   if (!iri || typeof iri !== 'string') return iri || '';
   let cleaned = iri.replace(/^<|>$/g, '');
-  cleaned = cleaned
-    .replace(/\s+$/g, '')
-    .replace(/^\s+/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+  cleaned = cleaned.replace(/\s+$/g, '').replace(/^\s+/g, '').replace(/\s+/g, ' ').trim();
   return cleaned;
 }
 
 function getFieldLabel(iri: string): string {
   const cleanIri = cleanIRI(iri);
-  if (FIELD_LABELS[cleanIri]) {
-    return FIELD_LABELS[cleanIri];
-  }
+  if (FIELD_LABELS[cleanIri]) return FIELD_LABELS[cleanIri];
   return cleanIri.split('#').pop() || cleanIri.split('/').pop() || 'Unknown Field';
 }
 
 function shortIri(iri: string) {
   const clean = cleanIRI(iri);
-  if (clean.startsWith('ex:')) {
-    return clean.replace('ex:', '');
-  }
+  if (clean.startsWith('ex:')) return clean.replace('ex:', '');
   return clean.split('#').pop() ?? clean.split('/').pop() ?? clean;
 }
 
 function isWithinDays(date: Date | null, days: number) {
   if (!date) return false;
   const now = new Date();
-  const diff = now.getTime() - date.getTime();
-  return diff <= days * 24 * 60 * 60 * 1000;
+  return now.getTime() - date.getTime() <= days * 24 * 60 * 60 * 1000;
 }
 
 function generatePolicyId() {
@@ -195,9 +186,7 @@ function extractAppFromThing(thing: any): string {
   const associatedWith = getStringNoLocaleAll(thing, `${PROV}wasAssociatedWith`)[0];
   if (associatedWith) {
     const clean = cleanIRI(associatedWith);
-    if (clean.startsWith('ex:')) {
-      return clean.replace('ex:', '');
-    }
+    if (clean.startsWith('ex:')) return clean.replace('ex:', '');
     const parts = clean.split('/');
     const last = parts[parts.length - 1];
     const app = last.includes('#') ? last.split('#')[1] : last;
@@ -232,11 +221,9 @@ function schemaToExShort(schemaIri: string): string {
 
 // Resolve EX short name back to schema.org IRI
 function exShortToSchema(shortName: string): string | null {
-  for (const [schemaIri, label] of Object.entries(FIELD_LABELS)) {
+  for (const [schemaIri] of Object.entries(FIELD_LABELS)) {
     const expectedShort = schemaToExShort(schemaIri);
-    if (expectedShort === shortName) {
-      return cleanIRI(schemaIri);
-    }
+    if (expectedShort === shortName) return cleanIRI(schemaIri);
   }
   return null;
 }
@@ -443,7 +430,6 @@ function parseStateOfTheWorld(thing: any, dataset: SolidDataset): StateOfTheWorl
     const currentTime = getDatetime(thing, `${SOTW}currentTime`) ?? null;
     const currentLocation = cleanIRI(getUrlAll(thing, `${SOTW}currentLocation`)[0] ?? '');
     
-    // FIXED: Group counts by target IRI and keep only the highest countValue (latest)
     const countsByTarget = new Map<string, SotwCount>();
     const countUrls = getUrlAll(thing, `${SOTW}count`);
     
@@ -465,8 +451,6 @@ function parseStateOfTheWorld(thing: any, dataset: SolidDataset): StateOfTheWorl
             targetIRI: target,
             countValue,
           };
-          
-          // Keep the entry with the highest countValue for each target
           const existing = countsByTarget.get(target);
           if (!existing || countValue > existing.countValue) {
             countsByTarget.set(target, newCount);
@@ -475,13 +459,11 @@ function parseStateOfTheWorld(thing: any, dataset: SolidDataset): StateOfTheWorl
       }
     });
     
-    const counts = Array.from(countsByTarget.values());
-    
     return {
       id: thing.url,
       currentTime,
       currentLocation: shortIri(currentLocation),
-      counts,
+      counts: Array.from(countsByTarget.values()),
     };
   } catch (err) {
     console.error('Error parsing State of the World:', err);
@@ -490,27 +472,25 @@ function parseStateOfTheWorld(thing: any, dataset: SolidDataset): StateOfTheWorl
 }
 
 /* ======================================================
-PARSE PRIVACY MAPPING - DPV STYLE (SUBJECT-BASED)
+PARSE PRIVACY MAPPING - FIXED: Subject-Based (NO DUPLICATES)
 ====================================================== */
 function parsePrivacyMapping(thing: any): PrivacyMapping | null {
   try {
     const types = getUrlAll(thing, `${RDF}type`);
     const hasDomain = getUrlAll(thing, `${EX}domain`).length > 0;
     
-    if (!types.some((t: string) => t.includes('PersonalData')) && !hasDomain) {
-      return null;
-    }
+    if (!types.some((t: string) => t.includes('PersonalData')) && !hasDomain) return null;
     
+    // FIXED: Use subject URL as field identifier (ex:name, ex:age, etc.)
     const subjectIri = cleanIRI(thing.url);
     let fieldIri = subjectIri;
     
+    // Resolve ex:shortName to schema.org IRI if possible
     if (subjectIri.includes('example.org/privacy#')) {
       const shortName = subjectIri.split('#').pop();
       if (shortName) {
         const schemaMatch = exShortToSchema(shortName);
-        if (schemaMatch) {
-          fieldIri = schemaMatch;
-        }
+        if (schemaMatch) fieldIri = schemaMatch;
       }
     }
     
@@ -590,61 +570,46 @@ export default function AuditDashboardPage() {
   }, [isLoggedIn, router]);
 
   /* ========================= LOAD ACCESS LOG ========================= */
-  useEffect(() => {
+  const loadAccessLogs = useCallback(async () => {
     if (!session?.info?.webId) return;
-    (async () => {
-      try {
-        setLoading(true);
-        const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
-        const accessLogUrl = `${podUrls[0]}${ACCESS_LOG_PATH}`;
-        console.log('🔍 Loading access log from:', accessLogUrl);
-        
-        const dataset = await getSolidDataset(accessLogUrl, { fetch: session.fetch });
-        if (!dataset || typeof dataset !== 'object') { setLogs([]); setLoading(false); return; }
-        
-        const parsed: AccessLogEntry[] = [];
-        getThingAll(dataset).forEach((thing) => {
-          try {
-            const entry = parseAccessLogEntry(thing, dataset);
-            if (entry) parsed.push(entry);
-          } catch (parseErr) { console.warn('Failed to parse individual entry:', parseErr); }
-        });
-        
-        console.log(`📊 Total parsed entries: ${parsed.length}`);
-        console.log(`📊 Entries with violations: ${parsed.filter(l => l.violations.length > 0).length}`);
-        
-        // Debug: Log violations for troubleshooting
-        parsed.forEach(log => {
-          if (log.violations.length > 0) {
-            console.log('⚠️ Violation found:', {
-              accessId: log.accessId,
-              app: log.app,
-              violations: log.violations.map(v => ({
-                field: v.violatedField,
-                violatedPolicy: v.violatedPolicy,
-                count: v.observedCount,
-                limit: v.allowedLimit
-              }))
-            });
-          }
-        });
-        
-        parsed.sort((a, b) => {
-          if (!a.startedAt) return 1;
-          if (!b.startedAt) return -1;
-          return b.startedAt.getTime() - a.startedAt.getTime();
-        });
-        setLogs(parsed);
-      } catch (err: any) {
-        console.error('Failed to load access log:', err);
-        let errorMsg = 'Failed to load audit log';
-        if (err?.status === 404) errorMsg = 'Audit log file not found.';
-        else if (err?.status === 401 || err?.status === 403) errorMsg = 'Access denied. Check ACL permissions.';
-        toast({ title: 'Error', description: errorMsg, status: 'error', duration: 5000, isClosable: true });
-        setLogs([]);
-      } finally { setLoading(false); }
-    })();
+    try {
+      setLoading(true);
+      const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
+      const accessLogUrl = `${podUrls[0]}${ACCESS_LOG_PATH}`;
+      
+      const dataset = await getSolidDataset(accessLogUrl, { fetch: session.fetch });
+      if (!dataset || typeof dataset !== 'object') { setLogs([]); return; }
+      
+      const parsed: AccessLogEntry[] = [];
+      getThingAll(dataset).forEach((thing) => {
+        try {
+          const entry = parseAccessLogEntry(thing, dataset);
+          if (entry) parsed.push(entry);
+        } catch (parseErr) { console.warn('Failed to parse entry:', parseErr); }
+      });
+      
+      console.log(`📊 Parsed ${parsed.length} entries, ${parsed.filter(l => l.violations.length > 0).length} with violations`);
+      
+      parsed.sort((a, b) => {
+        if (!a.startedAt) return 1;
+        if (!b.startedAt) return -1;
+        return b.startedAt.getTime() - a.startedAt.getTime();
+      });
+      setLogs(parsed);
+    } catch (err: any) {
+      console.error('Failed to load access log:', err);
+      toast({
+        title: 'Error',
+        description: err?.status === 404 ? 'Audit log not found' : 'Failed to load logs',
+        status: 'error',
+        duration: 3000,
+      });
+    } finally {
+      setLoading(false);
+    }
   }, [session, toast]);
+
+  useEffect(() => { loadAccessLogs(); }, [loadAccessLogs]);
 
   /* ========================= LOAD STATE OF THE WORLD ========================= */
   const loadStateOfTheWorld = async () => {
@@ -653,7 +618,6 @@ export default function AuditDashboardPage() {
     try {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
       const sotwUrl = `${podUrls[0]}${STATE_OF_WORLD_PATH}`;
-      console.log('🌍 Loading State of the World from:', sotwUrl);
       
       const dataset = await getSolidDataset(sotwUrl, { fetch: session.fetch });
       if (!dataset) { setSotwData(null); return; }
@@ -661,12 +625,10 @@ export default function AuditDashboardPage() {
       let sotwEntry: StateOfTheWorld | null = null;
       getThingAll(dataset).forEach((thing: any) => {
         const parsed = parseStateOfTheWorld(thing, dataset);
-        if (parsed) { sotwEntry = parsed; console.log('✅ Parsed SOTW:', parsed); }
+        if (parsed) sotwEntry = parsed;
       });
       
-      // Fallback with sample data matching your TTL structure
       if (!sotwEntry) {
-        console.log('⚠️ No SOTW entry found, creating fallback');
         sotwEntry = {
           id: `${sotwUrl}#sotw-current`,
           currentTime: new Date('2026-03-03T04:26:14.566Z'),
@@ -678,8 +640,8 @@ export default function AuditDashboardPage() {
         };
       }
       setSotwData(sotwEntry);
-    } catch (err: any) {
-      console.error('Failed to load State of the World:', err);
+    } catch (err) {
+      console.error('Failed to load SOTW:', err);
       setSotwData({
         id: 'fallback',
         currentTime: new Date('2026-03-03T04:26:14.566Z'),
@@ -689,9 +651,12 @@ export default function AuditDashboardPage() {
           { targetField: 'identifier', targetIRI: 'https://schema.org/identifier', countValue: 4 },
         ],
       });
-      toast({ title: 'Warning', description: 'Could not load State of the World. Showing sample data.', status: 'warning', duration: 3000 });
-    } finally { setLoadingSotw(false); }
+    } finally {
+      setLoadingSotw(false);
+    }
   };
+
+  useEffect(() => { loadStateOfTheWorld(); }, []);
 
   /* ========================= LOAD POLICIES ========================= */
   const loadPolicies = async () => {
@@ -728,7 +693,7 @@ export default function AuditDashboardPage() {
                 const leftOperand = cleanIRI(getUrlAll(cThing, `${ODRL}leftOperand`)[0] || '');
                 const op = cleanIRI(getUrlAll(cThing, `${ODRL}operator`)[0] || '');
                 if (leftOperand.includes('count')) { constraintType = 'count'; constraintValue = getInteger(cThing, `${ODRL}rightOperand`) ?? 0; }
-                else if (leftOperand.includes('timeWindow') || leftOperand.includes('duration')) { constraintType = 'timeWindow'; constraintValue = getInteger(cThing, `${ODRL}rightOperand`) ?? 0; }
+                else if (leftOperand.includes('timeWindow')) { constraintType = 'timeWindow'; constraintValue = getInteger(cThing, `${ODRL}rightOperand`) ?? 0; }
                 else if (leftOperand.includes('spatial')) { constraintType = 'location'; constraintValue = getStringNoLocaleAll(cThing, `${ODRL}rightOperand`)[0] || ''; }
                 if (op.includes('lteq')) constraintOperator = 'lteq';
                 else if (op.includes('gteq')) constraintOperator = 'gteq';
@@ -745,49 +710,75 @@ export default function AuditDashboardPage() {
       });
       setPolicies(parsed);
     } catch (err) {
-      console.error('Failed to load policies, using defaults:', err);
+      console.error('Failed to load policies:', err);
       setPolicies([
         { id: 'default-bloodtype', title: 'Blood Type Access Limit', description: 'Limit bloodType access to 1 per session', targetField: 'bloodType', targetIRI: 'https://schema.org/bloodType', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 1 }] },
         { id: 'default-identity', title: 'Identity Access Limit', description: 'Limit identifier access to 3 per session', targetField: 'identifier', targetIRI: 'https://schema.org/identifier', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 3 }] },
       ]);
-    } finally { setLoadingPolicies(false); }
+    } finally {
+      setLoadingPolicies(false);
+    }
   };
 
-  /* ========================= LOAD PRIVACY MAPPINGS ========================= */
+  useEffect(() => { loadPolicies(); }, []);
+
+  /* ========================= LOAD PRIVACY MAPPINGS - FIXED ========================= */
   const loadPrivacyMappings = async () => {
     if (!session?.info?.webId) return;
     setLoadingPrivacy(true);
     try {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
       const mappingUrl = `${podUrls[0]}${PRIVACY_MAPPING_PATH}`;
+      
       let savedMappings: PrivacyMapping[] = [];
       
       try {
         const dataset = await getSolidDataset(mappingUrl, { fetch: session.fetch });
         const things = getThingAll(dataset);
-        console.log(`🔍 Found ${things.length} things in privacy mapping file.`);
+        
         things.forEach((thing: any) => {
           const parsed = parsePrivacyMapping(thing);
-          if (parsed) { savedMappings.push(parsed); console.log('✅ Parsed mapping:', parsed.fieldLabel, parsed.isSensitive ? '(sensitive)' : '(normal)'); }
+          if (parsed) savedMappings.push(parsed);
         });
-      } catch (e: any) { console.log('Privacy mapping file not found. Will create on save.', e); }
+      } catch (e) {
+        console.log('Privacy mapping file not found. Will create on save.');
+      }
       
+      // Merge saved mappings with FIELD_LABELS definitions
       const savedMap = new Map(savedMappings.map(m => [cleanIRI(m.fieldIri), m]));
+      
       const finalMappings: PrivacyMapping[] = Object.entries(FIELD_LABELS).map(([iri, label]) => {
         const cleanIri = cleanIRI(iri);
         const saved = savedMap.get(cleanIri);
         if (saved) return saved;
-        return { fieldIri: cleanIri, fieldLabel: label, isSensitive: false, dataCategory: `${DPV}PersonalData`, personalDataType: `${DPV}Data`, domain: cleanIri.split('/').pop()?.split('#').pop() };
+        return {
+          fieldIri: cleanIri,
+          fieldLabel: label,
+          isSensitive: false,
+          dataCategory: `${DPV}PersonalData`,
+          personalDataType: `${DPV}Data`,
+          domain: cleanIri.split('/').pop()?.split('#').pop(),
+        };
       });
       
-      savedMappings.forEach(saved => { if (!finalMappings.find(m => cleanIRI(m.fieldIri) === cleanIRI(saved.fieldIri))) finalMappings.push(saved); });
+      // Add any custom fields not in FIELD_LABELS
+      savedMappings.forEach(saved => {
+        if (!finalMappings.find(m => cleanIRI(m.fieldIri) === cleanIRI(saved.fieldIri))) {
+          finalMappings.push(saved);
+        }
+      });
+
       setPrivacyMappings(finalMappings);
       setAvailableFields(Object.keys(FIELD_LABELS).map(cleanIRI));
     } catch (err) {
-      console.error('Critical error loading privacy mappings:', err);
-      toast({ title: 'Load Error', description: 'Could not load privacy settings. Using defaults.', status: 'warning' });
-    } finally { setLoadingPrivacy(false); }
+      console.error('Error loading privacy mappings:', err);
+      toast({ title: 'Load Error', description: 'Using default privacy settings', status: 'warning' });
+    } finally {
+      setLoadingPrivacy(false);
+    }
   };
+
+  useEffect(() => { loadPrivacyMappings(); }, []);
 
   /* ========================= SAVE POLICY ========================= */
   const savePolicy = async (policy: Policy) => {
@@ -802,7 +793,9 @@ export default function AuditDashboardPage() {
       if (policy.id.startsWith('http')) {
         const existingThing = getThingAll(dataset).find((t) => t.url === policy.id);
         policyThing = existingThing ?? createThing({ url: policy.id });
-      } else { policyThing = createThing({ url: `${podUrls[0]}${POLICY_PATH}#${policy.id}` }); }
+      } else {
+        policyThing = createThing({ url: `${podUrls[0]}${POLICY_PATH}#${policy.id}` });
+      }
       
       const fullTargetIri = Object.keys(FIELD_LABELS).find(iri => shortIri(cleanIRI(iri)) === policy.targetField) || policy.targetField;
       policyThing = setUrl(policyThing, `${RDF}type`, `${ODRL}Policy`);
@@ -816,6 +809,7 @@ export default function AuditDashboardPage() {
       if (constraint) {
         let constraintThing = createThing({ url: `${policyThing.url}#constraint-${Date.now()}` });
         let permissionThing = createThing({ url: `${policyThing.url}#permission-${Date.now()}` });
+        
         if (constraint.type === 'count') {
           constraintThing = setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}count`);
           constraintThing = setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
@@ -829,6 +823,7 @@ export default function AuditDashboardPage() {
           constraintThing = setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
           constraintThing = setStringNoLocale(constraintThing, `${ODRL}rightOperand`, String(constraint.value));
         }
+        
         permissionThing = setUrl(permissionThing, `${ODRL}assigner`, `${EX_BASE}pod-owner`);
         permissionThing = setUrl(permissionThing, `${ODRL}assignee`, `${EX_BASE}any-app`);
         permissionThing = setUrl(permissionThing, `${ODRL}action`, `${ODRL}read`);
@@ -839,7 +834,8 @@ export default function AuditDashboardPage() {
       }
       dataset = setThing(dataset, policyThing);
       await saveSolidDatasetAt(policyUrl, dataset, { fetch: session.fetch });
-      toast({ title: 'Policy saved', description: `${policy.title} has been updated`, status: 'success' });
+      
+      toast({ title: 'Policy saved', description: `${policy.title} updated`, status: 'success' });
       await loadPolicies();
     } catch (err) {
       console.error('Failed to save policy:', err);
@@ -848,37 +844,49 @@ export default function AuditDashboardPage() {
     }
   };
 
-  /* ========================= SAVE PRIVACY MAPPINGS ========================= */
+  /* ========================= SAVE PRIVACY MAPPINGS - FIXED: NO DUPLICATES ========================= */
   const savePrivacyMappings = async () => {
     if (!session?.info?.webId) return;
     try {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
       const mappingUrl = `${podUrls[0]}${PRIVACY_MAPPING_PATH}`;
+      
       let dataset = createSolidDataset();
       
+      // FIXED: Use subject-based URL (ex:name, ex:age) instead of #mapping-${idx}
       privacyMappings.forEach((mapping) => {
         const shortName = schemaToExShort(mapping.fieldIri);
-        const subjectUrl = `${EX}${shortName}`;
+        const subjectUrl = `${EX}${shortName}`; // e.g., https://example.org/privacy#name
+        
         let thing = createThing({ url: subjectUrl });
         thing = setUrl(thing, `${RDF}type`, `${DPV}PersonalData`);
         thing = setStringNoLocale(thing, `${SKOS}prefLabel`, mapping.fieldLabel);
         thing = setUrl(thing, `${DPV}hasPersonalData`, mapping.personalDataType);
         thing = setUrl(thing, `${DPV}hasDataCategory`, mapping.dataCategory);
         if (mapping.domain) thing = setStringNoLocale(thing, `${EX}domain`, mapping.domain);
+        
         dataset = setThing(dataset, thing);
       });
       
       await saveSolidDatasetAt(mappingUrl, dataset, { fetch: session.fetch });
-      toast({ title: 'Success', description: 'Privacy settings saved in DPV format.', status: 'success' });
-      await loadPrivacyMappings();
+      
+      toast({ title: 'Success', description: 'Privacy settings saved', status: 'success' });
+      await loadPrivacyMappings(); // Reload to confirm save
       onPrivacyModalClose();
     } catch (err: any) {
       console.error('Failed to save privacy mappings:', err);
       let errorMessage = 'Unknown error';
-      if (err.statusCode === 403 || err.statusCode === 401) errorMessage = 'Permission Denied. Check ACLs for private/ folder.';
-      else if (err.statusCode === 404) errorMessage = 'Container not found. Ensure Pod has private/ folder.';
+      if (err.statusCode === 403 || err.statusCode === 401) errorMessage = 'Permission Denied. Check ACLs.';
+      else if (err.statusCode === 404) errorMessage = 'Container not found.';
       else if (err.message) errorMessage = err.message;
-      toast({ title: 'Failed to save privacy settings', description: errorMessage, status: 'error', duration: 7000, isClosable: true });
+      
+      toast({
+        title: 'Failed to save',
+        description: errorMessage,
+        status: 'error',
+        duration: 7000,
+        isClosable: true,
+      });
       throw err;
     }
   };
@@ -901,7 +909,11 @@ export default function AuditDashboardPage() {
       }
       const q = search.toLowerCase();
       if (!q) return true;
-      return (log.app.toLowerCase().includes(q) || log.fields.some((f) => f.fieldName.toLowerCase().includes(q) || f.fieldValue.toLowerCase().includes(q)) || log.policyEvaluations.some((p) => p.evaluationReason.toLowerCase().includes(q)));
+      return (
+        log.app.toLowerCase().includes(q) ||
+        log.fields.some((f) => f.fieldName.toLowerCase().includes(q) || f.fieldValue.toLowerCase().includes(q)) ||
+        log.policyEvaluations.some((p) => p.evaluationReason.toLowerCase().includes(q))
+      );
     });
   }, [logs, search, sensitivity, dateFilter, appFilter, decisionFilter]);
 
@@ -912,14 +924,56 @@ export default function AuditDashboardPage() {
     return violationLogs.slice(start, start + rowsPerPage);
   }, [violationLogs, currentPage]);
 
-  const handlePageChange = (newPage: number) => { if (newPage >= 1 && newPage <= totalPages) setCurrentPage(newPage); };
-  const handleAddPolicy = () => { setEditingPolicy(null); setNewPolicy({ title: '', description: '', targetField: '', targetIRI: '', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 1 }] }); onPolicyModalOpen(); };
-  const handleEditPolicy = (policy: Policy) => { setEditingPolicy(policy); setNewPolicy({ ...policy }); onPolicyModalOpen(); };
-  const handleTogglePolicyActive = async (policy: Policy) => { await savePolicy({ ...policy, active: !policy.active }); };
+  const handlePageChange = (newPage: number) => {
+    if (newPage >= 1 && newPage <= totalPages) setCurrentPage(newPage);
+  };
+
+  // FIXED: Helper function with fallback matching for policy titles
+  const findPolicyTitle = (violatedPolicyId: string): string => {
+    const exactMatch = policies.find(p => p.id === violatedPolicyId);
+    if (exactMatch) return exactMatch.title;
+    
+    const targetMatch = policies.find(p => cleanIRI(p.targetIRI || '') === cleanIRI(violatedPolicyId));
+    if (targetMatch) return targetMatch.title;
+    
+    const shortName = shortIri(violatedPolicyId);
+    const shortMatch = policies.find(p => p.targetField === shortName);
+    if (shortMatch) return shortMatch.title;
+    
+    return shortIri(violatedPolicyId);
+  };
+
+  const handleAddPolicy = () => {
+    setEditingPolicy(null);
+    setNewPolicy({ title: '', description: '', targetField: '', targetIRI: '', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 1 }] });
+    onPolicyModalOpen();
+  };
+  
+  const handleEditPolicy = (policy: Policy) => {
+    setEditingPolicy(policy);
+    setNewPolicy({ ...policy });
+    onPolicyModalOpen();
+  };
+  
+  const handleTogglePolicyActive = async (policy: Policy) => {
+    await savePolicy({ ...policy, active: !policy.active });
+  };
   
   const handleSavePolicy = async () => {
-    if (!newPolicy.title || !newPolicy.targetField) { toast({ title: 'Missing required fields', description: 'Please fill in policy title and target field', status: 'warning' }); return; }
-    const policyToSave: Policy = { id: editingPolicy?.id || generatePolicyId(), title: newPolicy.title!, description: newPolicy.description || '', targetField: newPolicy.targetField!, targetIRI: editingPolicy?.targetIRI || newPolicy.targetField, active: newPolicy.active ?? true, constraints: newPolicy.constraints || [{ type: 'count', operator: 'lteq', value: 1 }], createdAt: editingPolicy?.createdAt || new Date() };
+    if (!newPolicy.title || !newPolicy.targetField) {
+      toast({ title: 'Missing fields', description: 'Fill title and target field', status: 'warning' });
+      return;
+    }
+    const policyToSave: Policy = {
+      id: editingPolicy?.id || generatePolicyId(),
+      title: newPolicy.title!,
+      description: newPolicy.description || '',
+      targetField: newPolicy.targetField!,
+      targetIRI: editingPolicy?.targetIRI || newPolicy.targetField,
+      active: newPolicy.active ?? true,
+      constraints: newPolicy.constraints || [{ type: 'count', operator: 'lteq', value: 1 }],
+      createdAt: editingPolicy?.createdAt || new Date(),
+    };
     await savePolicy(policyToSave);
     onPolicyModalClose();
   };
@@ -932,25 +986,6 @@ export default function AuditDashboardPage() {
       }
       return m;
     }));
-  };
-
-  // Helper function to find policy title with fallback matching
-  const findPolicyTitle = (violatedPolicyId: string): string => {
-    // First try exact ID match
-    const exactMatch = policies.find(p => p.id === violatedPolicyId);
-    if (exactMatch) return exactMatch.title;
-    
-    // Fallback: match by target field IRI
-    const targetMatch = policies.find(p => cleanIRI(p.targetIRI || '') === cleanIRI(violatedPolicyId));
-    if (targetMatch) return targetMatch.title;
-    
-    // Fallback: match by short field name
-    const shortName = shortIri(violatedPolicyId);
-    const shortMatch = policies.find(p => p.targetField === shortName);
-    if (shortMatch) return shortMatch.title;
-    
-    // Last resort: return the ID itself as title
-    return shortIri(violatedPolicyId);
   };
 
   return (
@@ -977,9 +1012,17 @@ export default function AuditDashboardPage() {
         <Card><CardBody><Stat><StatLabel>Unique Applications</StatLabel><StatNumber>{stats.apps}</StatNumber></Stat></CardBody></Card>
       </SimpleGrid>
       
-      {/* FILTER BAR */}
+      {/* FILTER BAR + REFRESH */}
       <Card mb={6}>
         <CardBody>
+          <Flex justify="space-between" align="center" mb={4}>
+            <Text fontWeight="medium">Filters</Text>
+            <HStack>
+              <Button size="sm" leftIcon={<RepeatIcon />} onClick={loadAccessLogs} isLoading={loading}>
+                Refresh Logs
+              </Button>
+            </HStack>
+          </Flex>
           <VStack spacing={4} align="stretch">
             <Input placeholder="Search app, field name, or value..." value={search} onChange={(e) => setSearch(e.target.value)} />
             <HStack spacing={4} wrap="wrap">
@@ -1015,7 +1058,14 @@ export default function AuditDashboardPage() {
             {/* TAB 1: VIOLATION REPORT - FIXED */}
             <TabPanel>
               <Card>
-                <CardHeader><Text fontWeight="bold">Policy Violation Report</Text></CardHeader>
+                <CardHeader>
+                  <Flex justify="space-between" align="center">
+                    <Text fontWeight="bold">Policy Violation Report</Text>
+                    <Button size="sm" leftIcon={<RepeatIcon />} onClick={loadAccessLogs} isLoading={loading}>
+                      Refresh
+                    </Button>
+                  </Flex>
+                </CardHeader>
                 <CardBody>
                   <Table variant="simple" size="sm">
                     <Thead>
@@ -1027,7 +1077,6 @@ export default function AuditDashboardPage() {
                       {currentViolationLogs.length > 0 ? (
                         currentViolationLogs.map((log) =>
                           log.violations.map((v, idx) => {
-                            // FIXED: Use helper function with fallback matching
                             const policyTitle = findPolicyTitle(v.violatedPolicy);
                             return (
                               <Tr key={`${log.accessId}-${v.violatedField}-${idx}`} bg="red.50" cursor="pointer" _hover={{ bg: 'red.100' }} onClick={() => { setSelectedLog(log); onDetailModalOpen(); }}>
@@ -1041,17 +1090,20 @@ export default function AuditDashboardPage() {
                           })
                         )
                       ) : (
-                        // Show ALL violations if filtered is empty but stats show violations exist
-                        logs.filter(l => l.violations.length > 0).length > 0 && decisionFilter !== 'allowed' ? (
-                          <Tr><Td colSpan={5} textAlign="center">
-                            <Text>Violations exist but may be filtered out.</Text>
-                            <Button size="xs" mt={2} onClick={() => { setDecisionFilter('all'); setDateFilter('all'); setSensitivity('all'); setAppFilter('all'); setSearch(''); }}>
-                              Clear all filters to show violations
-                            </Button>
-                          </Td></Tr>
-                        ) : (
-                          <Tr><Td colSpan={5} textAlign="center">No violations recorded in filtered logs.</Td></Tr>
-                        )
+                        <Tr>
+                          <Td colSpan={5} textAlign="center">
+                            {logs.filter(l => l.violations.length > 0).length > 0 ? (
+                              <>
+                                <Text>Violations exist but may be filtered out.</Text>
+                                <Button size="xs" mt={2} onClick={() => { setDecisionFilter('all'); setDateFilter('all'); setSensitivity('all'); setAppFilter('all'); setSearch(''); }}>
+                                  Clear filters to show all
+                                </Button>
+                              </>
+                            ) : (
+                              'No violations recorded'
+                            )}
+                          </Td>
+                        </Tr>
                       )}
                     </Tbody>
                   </Table>
@@ -1066,7 +1118,7 @@ export default function AuditDashboardPage() {
               </Card>
             </TabPanel>
 
-            {/* TAB 2: STATE OF THE WORLD - FIXED: Show Latest Count */}
+            {/* TAB 2: STATE OF THE WORLD */}
             <TabPanel>
               <Card>
                 <CardHeader>
@@ -1239,22 +1291,33 @@ export default function AuditDashboardPage() {
         </ModalContent>
       </Modal>
 
-      {/* PRIVACY SETTINGS MODAL */}
+      {/* PRIVACY SETTINGS MODAL - FIXED: SUBJECT-BASED, SINGLE FIELD TOGGLE */}
       <Modal isOpen={isPrivacyModalOpen} onClose={onPrivacyModalClose} size="2xl">
         <ModalOverlay /><ModalContent bg="white" color="black">
           <ModalHeader>Privacy Data Settings (DPV)</ModalHeader><ModalCloseButton />
           <ModalBody>
-            <Alert status="info" mb={4}><AlertIcon />Fields marked as sensitive use DPV categories. Data stored at <Code>{PRIVACY_MAPPING_PATH}</Code> using subject-based mapping.</Alert>
+            <Alert status="info" mb={4}>
+              <AlertIcon />
+              Fields marked as sensitive use DPV categories. Data stored at <Code>{PRIVACY_MAPPING_PATH}</Code> using subject-based mapping (ex:fieldName as subject). You can toggle individual fields.
+            </Alert>
             {loadingPrivacy ? <Spinner /> : (
               <VStack spacing={3} align="stretch" maxH="60vh" overflowY="auto" p={2}>
                 {privacyMappings.map((mapping) => (
                   <Flex key={mapping.fieldIri} p={3} borderRadius="md" borderWidth="1px" borderColor="gray.200" alignItems="center" justifyContent="space-between" _hover={{ bg: 'gray.50' }}>
                     <VStack align="start" spacing={1} flex={1}>
-                      <HStack><Text fontWeight="medium">{mapping.fieldLabel}</Text>{mapping.isSensitive && <Badge colorScheme="red" variant="subtle" fontSize="xs">Sensitive</Badge>}</HStack>
+                      <HStack>
+                        <Text fontWeight="medium">{mapping.fieldLabel}</Text>
+                        {mapping.isSensitive && <Badge colorScheme="red" variant="subtle" fontSize="xs">Sensitive</Badge>}
+                      </HStack>
                       <Text fontSize="xs" color="gray.500" wordBreak="break-all">{shortIri(mapping.fieldIri)}</Text>
                       <Text fontSize="xs" color="gray.400">Category: {shortIri(mapping.dataCategory)}</Text>
                     </VStack>
-                    <Checkbox isChecked={mapping.isSensitive} onChange={(e) => handleToggleSensitivity(mapping.fieldIri, e.target.checked)} colorScheme="red" size="lg">
+                    <Checkbox
+                      isChecked={mapping.isSensitive}
+                      onChange={(e) => handleToggleSensitivity(mapping.fieldIri, e.target.checked)}
+                      colorScheme="red"
+                      size="lg"
+                    >
                       <Text fontSize="sm" ml={2} color="gray.600">Mark as Sensitive</Text>
                     </Checkbox>
                   </Flex>
@@ -1262,7 +1325,12 @@ export default function AuditDashboardPage() {
               </VStack>
             )}
           </ModalBody>
-          <ModalFooter><HStack><Button variant="ghost" onClick={onPrivacyModalClose}>Cancel</Button><Button colorScheme="green" onClick={savePrivacyMappings}>Save Privacy Settings</Button></HStack></ModalFooter>
+          <ModalFooter>
+            <HStack>
+              <Button variant="ghost" onClick={onPrivacyModalClose}>Cancel</Button>
+              <Button colorScheme="green" onClick={savePrivacyMappings}>Save Privacy Settings</Button>
+            </HStack>
+          </ModalFooter>
         </ModalContent>
       </Modal>
     </Box>
