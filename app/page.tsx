@@ -643,7 +643,8 @@ export default function AuditDashboardPage() {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
       const sotwUrl = `${podUrls[0]}${STATE_OF_WORLD_PATH}`;
       
-      let dataset;
+      // ✅ FIXED: Add explicit type annotation for TypeScript strict mode
+      let dataset: SolidDataset;
       try {
         dataset = await getSolidDataset(sotwUrl, { fetch: session.fetch });
       } catch (error: any) {
