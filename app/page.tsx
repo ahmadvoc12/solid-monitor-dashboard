@@ -261,7 +261,7 @@ type PolicyEvaluation = {
 
 type FieldViolation = {
   violatedField: string;
-  violatedPolicy: string;
+  violatedPolicy: string; // This holds the dct:identifier value (e.g., "urn:uuid:...")
   observedCount: number;
   allowedLimit: number;
 };
@@ -288,8 +288,10 @@ type PolicyConstraint = {
   unit?: 'hours' | 'days' | 'km';
 };
 
+// ✅ UPDATED: Added identifier field for dct:identifier matching
 type Policy = {
-  id: string;
+  id: string; // The subject URL of the policy thing
+  identifier?: string; // ✅ NEW: dct:identifier value (e.g., "urn:uuid:...")
   title: string;
   description: string;
   targetField: string;
@@ -398,6 +400,7 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
           if (fvThing) {
             violations.push({
               violatedField: cleanIRI(getUrlAll(fvThing, `${FORCE}violatedField`)[0] ?? ''),
+              // ✅ violatedPolicy now holds the dct:identifier value (URN UUID)
               violatedPolicy: cleanIRI(getUrlAll(fvThing, `${FORCE}violatedPolicy`)[0] ?? ''),
               observedCount: getInteger(fvThing, `${FORCE}observedCount`) ?? 0,
               allowedLimit: getInteger(fvThing, `${FORCE}allowedLimit`) ?? 0,
@@ -689,7 +692,7 @@ export default function AuditDashboardPage() {
 
   useEffect(() => { loadStateOfTheWorld(); }, [session]);
 
-  /* ========================= LOAD POLICIES ========================= */
+  /* ========================= LOAD POLICIES - FIXED: Extract dct:identifier ========================= */
   const loadPolicies = async () => {
     if (!session?.info?.webId) return;
     setLoadingPolicies(true);
@@ -705,6 +708,10 @@ export default function AuditDashboardPage() {
         
         const title = getStringNoLocaleAll(thing, `${DCT}title`)[0] || 'Untitled Policy';
         const description = getStringNoLocaleAll(thing, `${DCT}description`)[0] || '';
+        
+        // ✅ NEW: Extract dct:identifier for matching with violatedPolicy
+        const identifier = getStringNoLocaleAll(thing, `${DCT}identifier`)[0];
+        
         const target = cleanIRI(getUrlAll(thing, `${ODRL}target`)[0] || '');
         const active = getBoolean(thing, `${FORCE}policyActive`) ?? true;
         const createdAt = getDatetime(thing, `${DCT}created`) ?? undefined;
@@ -735,16 +742,23 @@ export default function AuditDashboardPage() {
         });
         
         parsed.push({
-          id: thing.url, title, description, targetField: shortIri(target), targetIRI: target,
-          active, constraints: [{ type: constraintType, operator: constraintOperator, value: constraintValue }], createdAt,
+          id: thing.url,
+          identifier, // ✅ Store dct:identifier for matching
+          title,
+          description,
+          targetField: shortIri(target),
+          targetIRI: target,
+          active,
+          constraints: [{ type: constraintType, operator: constraintOperator, value: constraintValue }],
+          createdAt,
         });
       });
       setPolicies(parsed);
     } catch (err) {
       console.error('Failed to load policies:', err);
       setPolicies([
-        { id: 'default-bloodtype', title: 'Blood Type Access Limit', description: 'Limit bloodType access to 1 per session', targetField: 'bloodType', targetIRI: 'https://schema.org/bloodType', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 1 }] },
-        { id: 'default-identity', title: 'Identity Access Limit', description: 'Limit identifier access to 3 per session', targetField: 'identifier', targetIRI: 'https://schema.org/identifier', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 3 }] },
+        { id: 'default-bloodtype', identifier: 'urn:uuid:bloodtype-001', title: 'Blood Type Access Limit', description: 'Limit bloodType access to 1 per session', targetField: 'bloodType', targetIRI: 'https://schema.org/bloodType', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 1 }] },
+        { id: 'default-identity', identifier: 'urn:uuid:identity-001', title: 'Identity Access Limit', description: 'Limit identifier access to 3 per session', targetField: 'identifier', targetIRI: 'https://schema.org/identifier', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 3 }] },
       ]);
     } finally {
       setLoadingPolicies(false);
@@ -830,6 +844,12 @@ export default function AuditDashboardPage() {
       policyThing = setUrl(policyThing, `${RDF}type`, `${ODRL}Policy`);
       policyThing = setStringNoLocale(policyThing, `${DCT}title`, policy.title);
       policyThing = setStringNoLocale(policyThing, `${DCT}description`, policy.description || '');
+      
+      // ✅ Save dct:identifier if provided
+      if (policy.identifier) {
+        policyThing = setStringNoLocale(policyThing, `${DCT}identifier`, policy.identifier);
+      }
+      
       policyThing = setDatetime(policyThing, `${DCT}created`, policy.createdAt || new Date());
       policyThing = setUrl(policyThing, `${ODRL}target`, fullTargetIri);
       policyThing = setBoolean(policyThing, `${FORCE}policyActive`, policy.active);
@@ -998,7 +1018,6 @@ export default function AuditDashboardPage() {
     if (newPage >= 1 && newPage <= totalPages) setCurrentPage(newPage);
   };
 
-  // Handler to open Modal with History
   const handleViewHistory = (appName: string) => {
     const summaryItem = violationSummaryData.find(item => item.appName === appName);
     if (summaryItem) {
@@ -1010,16 +1029,26 @@ export default function AuditDashboardPage() {
     }
   };
 
-  const findPolicyByViolation = (violatedPolicyIri: string): Policy | undefined => {
-    const cleanViolated = cleanIRI(violatedPolicyIri);
+  // ✅ FIXED: Helper function to match violatedPolicy (dct:identifier URN) with policy.identifier
+  const findPolicyByViolation = (violatedPolicyIdentifier: string): Policy | undefined => {
+    const cleanIdentifier = cleanIRI(violatedPolicyIdentifier);
     
-    const exact = policies.find(p => p.id === cleanViolated || p.id === violatedPolicyIri);
+    // 1. Match by dct:identifier (URN UUID) - PRIMARY MATCH
+    const byIdentifier = policies.find(p => 
+      p.identifier && cleanIRI(p.identifier) === cleanIdentifier
+    );
+    if (byIdentifier) return byIdentifier;
+    
+    // 2. Fallback: Match by policy subject URL (old behavior)
+    const exact = policies.find(p => p.id === cleanIdentifier || p.id === violatedPolicyIdentifier);
     if (exact) return exact;
     
-    const byTarget = policies.find(p => cleanIRI(p.targetIRI || '') === cleanViolated);
+    // 3. Fallback: Match by targetIRI
+    const byTarget = policies.find(p => cleanIRI(p.targetIRI || '') === cleanIdentifier);
     if (byTarget) return byTarget;
     
-    const shortName = shortIri(cleanViolated);
+    // 4. Fallback: Match by targetField short name
+    const shortName = shortIri(cleanIdentifier);
     const byShort = policies.find(p => p.targetField === shortName);
     if (byShort) return byShort;
     
@@ -1049,6 +1078,7 @@ export default function AuditDashboardPage() {
     }
     const policyToSave: Policy = {
       id: editingPolicy?.id || generatePolicyId(),
+      identifier: editingPolicy?.identifier, // Preserve identifier when editing
       title: newPolicy.title!,
       description: newPolicy.description || '',
       targetField: newPolicy.targetField!,
@@ -1157,14 +1187,18 @@ export default function AuditDashboardPage() {
                         <Th>Total Violations</Th>
                         <Th>Last Violation Time</Th>
                         <Th>Last Policy Violated</Th>
+                        <Th>Policy ID</Th>
                         <Th>Action</Th>
                       </Tr>
                     </Thead>
                     <Tbody>
                       {currentSummaryData.length > 0 ? (
                         currentSummaryData.map((item) => {
+                          // ✅ Use updated helper that matches by dct:identifier
                           const matchedPolicy = findPolicyByViolation(item.violatedPolicyId);
                           const policyTitle = matchedPolicy ? matchedPolicy.title : 'Unknown Policy';
+                          const policyIdentifier = matchedPolicy?.identifier || shortIri(item.violatedPolicyId);
+                          
                           return (
                             <Tr key={item.appName} bg="red.50" _hover={{ bg: 'red.100' }} cursor="pointer">
                               <Td fontWeight="bold" textTransform="capitalize">{item.appName}</Td>
@@ -1173,6 +1207,7 @@ export default function AuditDashboardPage() {
                               </Td>
                               <Td>{item.latestTime?.toLocaleString()}</Td>
                               <Td>{policyTitle}</Td>
+                              <Td><Code fontSize="xs">{policyIdentifier}</Code></Td>
                               <Td>
                                 <Button
                                   size="xs"
@@ -1187,7 +1222,7 @@ export default function AuditDashboardPage() {
                         })
                       ) : (
                         <Tr>
-                          <Td colSpan={5} textAlign="center">
+                          <Td colSpan={6} textAlign="center">
                             {logs.filter(l => l.decision === 'VIOLATION').length > 0 ? (
                               <>
                                 <Text>Violations exist but may be filtered out.</Text>
@@ -1293,7 +1328,8 @@ export default function AuditDashboardPage() {
                     <Tr>
                       <Th>Time</Th>
                       <Th>Violated Fields</Th>
-                      <Th>Policy</Th>
+                      <Th>Policy Title</Th>
+                      <Th>Policy Identifier</Th>
                       <Th>Details</Th>
                     </Tr>
                   </Thead>
@@ -1310,9 +1346,17 @@ export default function AuditDashboardPage() {
                         <Td>
                           {log.violations.length > 0 && log.violations[0].violatedPolicy ? (
                             <Text fontWeight="medium">
-                              {findPolicyByViolation(log.violations[0].violatedPolicy)?.title || shortIri(log.violations[0].violatedPolicy)}
+                              {/* ✅ Use updated helper for matching */}
+                              {findPolicyByViolation(log.violations[0].violatedPolicy)?.title || 'Unknown Policy'}
                             </Text>
                           ) : 'Unknown'}
+                        </Td>
+                        <Td>
+                          {log.violations.length > 0 && log.violations[0].violatedPolicy ? (
+                            <Code fontSize="xs">
+                              {findPolicyByViolation(log.violations[0].violatedPolicy)?.identifier || shortIri(log.violations[0].violatedPolicy)}
+                            </Code>
+                          ) : 'N/A'}
                         </Td>
                         <Td>
                           <Button size="xs" variant="outline" onClick={() => {}}>
@@ -1375,6 +1419,16 @@ export default function AuditDashboardPage() {
                   <VStack spacing={4} align="stretch">
                     <FormControl isRequired><FormLabel>Policy Title</FormLabel><Input value={newPolicy.title || ''} onChange={(e) => setNewPolicy((p) => ({ ...p, title: e.target.value }))} placeholder="e.g., Blood Type Access Limit" /></FormControl>
                     <FormControl><FormLabel>Description</FormLabel><Input value={newPolicy.description || ''} onChange={(e) => setNewPolicy((p) => ({ ...p, description: e.target.value }))} placeholder="Describe what this policy controls" /></FormControl>
+                    {/* ✅ NEW: Identifier field for dct:identifier */}
+                    <FormControl>
+                      <FormLabel>Policy Identifier (dct:identifier)</FormLabel>
+                      <Input 
+                        value={newPolicy.identifier || ''} 
+                        onChange={(e) => setNewPolicy((p) => ({ ...p, identifier: e.target.value }))} 
+                        placeholder="e.g., urn:uuid:2c5c9cc0-c73e-4f78-8905-c08bd427866d"
+                      />
+                      <FormHelperText>Used to match violations from access logs. Optional.</FormHelperText>
+                    </FormControl>
                     <FormControl isRequired>
                       <FormLabel>Target Field</FormLabel>
                       <Select value={newPolicy.targetField || ''} onChange={(e) => setNewPolicy((p) => ({ ...p, targetField: e.target.value }))} placeholder="Select a field to protect" isDisabled={!!editingPolicy}>
@@ -1412,15 +1466,15 @@ export default function AuditDashboardPage() {
               </AccordionItem>
             </Accordion>
             <Box mt={6}>
-              {/* ✅ FIX: mb={3} not mb={3" */}
               <Text fontWeight="bold" mb={3}>Existing Policies</Text>
               {loadingPolicies ? <Spinner /> : (
                 <Table variant="simple" size="sm">
-                  <Thead><Tr><Th>Policy</Th><Th>Target</Th><Th>Constraints</Th><Th>Status</Th><Th>Actions</Th></Tr></Thead>
+                  <Thead><Tr><Th>Policy</Th><Th>Identifier</Th><Th>Target</Th><Th>Constraints</Th><Th>Status</Th><Th>Actions</Th></Tr></Thead>
                   <Tbody>
                     {policies.map((policy) => (
                       <Tr key={policy.id}>
                         <Td><Text fontWeight="medium">{policy.title}</Text><Text fontSize="xs" color="gray.600">{policy.description}</Text></Td>
+                        <Td>{policy.identifier ? <Code fontSize="xs">{policy.identifier}</Code> : <Text fontSize="xs" color="gray.400">N/A</Text>}</Td>
                         <Td><Tag size="sm" colorScheme="purple">{policy.targetField}</Tag></Td>
                         <Td>{policy.constraints.map((c, idx) => <Text key={`${policy.id}-c-${idx}`} fontSize="xs">{c.type === 'count' ? `Count ${c.operator} ${c.value}` : c.type === 'timeWindow' ? `Time ${c.operator} ${c.value}` : `Location ${c.operator} ${c.value}`}</Text>)}</Td>
                         <Td><Switch size="sm" isChecked={policy.active} onChange={() => handleTogglePolicyActive(policy)} /></Td>
