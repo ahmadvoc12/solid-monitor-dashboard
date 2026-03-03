@@ -60,7 +60,6 @@ import {
   TabPanel,
   Link,
   Code,
-  Tooltip as ChakraTooltip,
   Checkbox,
 } from '@chakra-ui/react';
 import {
@@ -68,7 +67,6 @@ import {
   DeleteIcon,
   AddIcon,
   InfoIcon,
-  ViewIcon,
   ExternalLinkIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -93,8 +91,6 @@ import {
   getInteger,
   createSolidDataset,
   setThing,
-  setBoolean,
-  setInteger,
   ThingPersisted,
   SolidDataset,
 } from '@inrupt/solid-client';
@@ -104,7 +100,7 @@ CONSTANTS & ONTOLOGY PREFIXES
 ====================================================== */
 const DPV = 'https://w3id.org/dpv#';
 const DCT = 'http://purl.org/dc/terms/';
-const EX = 'https://example.org/privacy#';
+const EX = 'https://example.org/privacy#'; // Base for privacy subjects
 const EX_BASE = 'https://example.org/';
 const ODRL = 'http://www.w3.org/ns/odrl/2/';
 const XSD = 'http://www.w3.org/2001/XMLSchema#';
@@ -164,6 +160,7 @@ function getFieldLabel(iri: string): string {
 function shortIri(iri: string) {
   const clean = cleanIRI(iri);
   if (clean.startsWith('ex:')) return clean.replace('ex:', '');
+  if (clean.startsWith(EX_BASE)) return clean.replace(EX_BASE, '').replace('privacy#', '');
   return clean.split('#').pop() ?? clean.split('/').pop() ?? clean;
 }
 
@@ -310,7 +307,7 @@ type StateOfTheWorld = {
 };
 
 /* ======================================================
-PARSE ACCESS LOG ENTRY
+PARSE ACCESS LOG ENTRY - FIXED: Generate Violation if Decision is Violation
 ====================================================== */
 function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry | null {
   try {
@@ -318,7 +315,8 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
     if (!types.some((t: string) => t.includes('Activity'))) return null;
     
     const decision = getStringNoLocaleAll(thing, `${FORCE}decision`)[0];
-    if (!decision) return null;
+    // Allow parsing even if decision is missing (default to ALLOWED), but check strictly for VIOLATION
+    const finalDecision = (decision === 'VIOLATION' ? 'VIOLATION' : 'ALLOWED') as 'ALLOWED' | 'VIOLATION';
     
     const accessId = thing.url.split('#').pop() ?? thing.url;
     const startedAt = getDatetime(thing, `${PROV}startedAtTime`) ?? null;
@@ -394,9 +392,24 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
         });
       });
     }
-    
-    if (violations.length > 0) {
-      console.log('🔍 Found violations for access:', accessId, violations);
+
+    // FIX: If decision is VIOLATION but no detailed violations were parsed, create a generic one
+    if (finalDecision === 'VIOLATION' && violations.length === 0) {
+      console.warn(`Entry ${accessId} is marked VIOLATION but has no violation details. Generating generic entry.`);
+      // Try to find a policy ID from evaluations
+      const genericPolicyId = policyEvaluations.length > 0 
+        ? policyEvaluations[0].evaluatedPolicy 
+        : 'unknown-policy';
+      const genericField = fields.length > 0 ? fields[0].fieldIri : 'unknown-field';
+      
+      const genericViolation: FieldViolation = {
+        violatedField: genericField,
+        violatedPolicy: genericPolicyId,
+        observedCount: 0, 
+        allowedLimit: 0
+      };
+      violations.push(genericViolation);
+      violatedPolicies.push(genericPolicyId);
     }
     
     return {
@@ -404,7 +417,7 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
       accessId,
       startedAt,
       app,
-      decision: decision as 'ALLOWED' | 'VIOLATION',
+      decision: finalDecision,
       accessMethod,
       accessedResource,
       fields,
@@ -420,7 +433,7 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
 }
 
 /* ======================================================
-PARSE STATE OF THE WORLD - FIXED: Take Latest Count per Target
+PARSE STATE OF THE WORLD
 ====================================================== */
 function parseStateOfTheWorld(thing: any, dataset: SolidDataset): StateOfTheWorld | null {
   try {
@@ -472,16 +485,16 @@ function parseStateOfTheWorld(thing: any, dataset: SolidDataset): StateOfTheWorl
 }
 
 /* ======================================================
-PARSE PRIVACY MAPPING - FIXED: Subject-Based (NO DUPLICATES)
+PARSE PRIVACY MAPPING
 ====================================================== */
 function parsePrivacyMapping(thing: any): PrivacyMapping | null {
   try {
     const types = getUrlAll(thing, `${RDF}type`);
     const hasDomain = getUrlAll(thing, `${EX}domain`).length > 0;
     
+    // Match if it has the right type or domain (to be robust)
     if (!types.some((t: string) => t.includes('PersonalData')) && !hasDomain) return null;
     
-    // FIXED: Use subject URL as field identifier (ex:name, ex:age, etc.)
     const subjectIri = cleanIRI(thing.url);
     let fieldIri = subjectIri;
     
@@ -588,7 +601,7 @@ export default function AuditDashboardPage() {
         } catch (parseErr) { console.warn('Failed to parse entry:', parseErr); }
       });
       
-      console.log(`📊 Parsed ${parsed.length} entries, ${parsed.filter(l => l.violations.length > 0).length} with violations`);
+      console.log(`📊 Parsed ${parsed.length} entries, ${parsed.filter(l => l.decision === 'VIOLATION').length} marked as VIOLATION`);
       
       parsed.sort((a, b) => {
         if (!a.startedAt) return 1;
@@ -628,35 +641,30 @@ export default function AuditDashboardPage() {
         if (parsed) sotwEntry = parsed;
       });
       
-      if (!sotwEntry) {
-        sotwEntry = {
-          id: `${sotwUrl}#sotw-current`,
-          currentTime: new Date('2026-03-03T04:26:14.566Z'),
-          currentLocation: 'iso:code:3166:ID',
-          counts: [
-            { targetField: 'bloodType', targetIRI: 'https://schema.org/bloodType', countValue: 4 },
-            { targetField: 'identifier', targetIRI: 'https://schema.org/identifier', countValue: 4 },
-          ],
-        };
+      if (sotwEntry) {
+        setSotwData(sotwEntry);
+      } else {
+        throw new Error("No SOTW entry found");
       }
-      setSotwData(sotwEntry);
     } catch (err) {
-      console.error('Failed to load SOTW:', err);
-      setSotwData({
+      // Use fallback if 404 or parsing fails
+      console.warn('Using fallback State of the World data (File missing or unreadable).');
+      const fallbackData = {
         id: 'fallback',
-        currentTime: new Date('2026-03-03T04:26:14.566Z'),
-        currentLocation: 'iso:code:3166:ID',
+        currentTime: new Date(),
+        currentLocation: 'Unknown',
         counts: [
-          { targetField: 'bloodType', targetIRI: 'https://schema.org/bloodType', countValue: 4 },
-          { targetField: 'identifier', targetIRI: 'https://schema.org/identifier', countValue: 4 },
+            { targetField: 'bloodType', targetIRI: 'https://schema.org/bloodType', countValue: 0 },
+            { targetField: 'identifier', targetIRI: 'https://schema.org/identifier', countValue: 0 },
         ],
-      });
+      };
+      setSotwData(fallbackData);
     } finally {
       setLoadingSotw(false);
     }
   };
 
-  useEffect(() => { loadStateOfTheWorld(); }, []);
+  useEffect(() => { loadStateOfTheWorld(); }, [session]); // Depend on session to avoid loop
 
   /* ========================= LOAD POLICIES ========================= */
   const loadPolicies = async () => {
@@ -711,6 +719,7 @@ export default function AuditDashboardPage() {
       setPolicies(parsed);
     } catch (err) {
       console.error('Failed to load policies:', err);
+      // Default fallback policies
       setPolicies([
         { id: 'default-bloodtype', title: 'Blood Type Access Limit', description: 'Limit bloodType access to 1 per session', targetField: 'bloodType', targetIRI: 'https://schema.org/bloodType', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 1 }] },
         { id: 'default-identity', title: 'Identity Access Limit', description: 'Limit identifier access to 3 per session', targetField: 'identifier', targetIRI: 'https://schema.org/identifier', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 3 }] },
@@ -720,9 +729,9 @@ export default function AuditDashboardPage() {
     }
   };
 
-  useEffect(() => { loadPolicies(); }, []);
+  useEffect(() => { loadPolicies(); }, [session]);
 
-  /* ========================= LOAD PRIVACY MAPPINGS - FIXED ========================= */
+  /* ========================= LOAD PRIVACY MAPPINGS ========================= */
   const loadPrivacyMappings = async () => {
     if (!session?.info?.webId) return;
     setLoadingPrivacy(true);
@@ -741,7 +750,7 @@ export default function AuditDashboardPage() {
           if (parsed) savedMappings.push(parsed);
         });
       } catch (e) {
-        console.log('Privacy mapping file not found. Will create on save.');
+        console.log('Privacy mapping file not found. Using defaults.');
       }
       
       // Merge saved mappings with FIELD_LABELS definitions
@@ -778,7 +787,7 @@ export default function AuditDashboardPage() {
     }
   };
 
-  useEffect(() => { loadPrivacyMappings(); }, []);
+  useEffect(() => { loadPrivacyMappings(); }, [session]);
 
   /* ========================= SAVE POLICY ========================= */
   const savePolicy = async (policy: Policy) => {
@@ -844,34 +853,45 @@ export default function AuditDashboardPage() {
     }
   };
 
-  /* ========================= SAVE PRIVACY MAPPINGS - FIXED: NO DUPLICATES ========================= */
+  /* ========================= SAVE PRIVACY MAPPINGS - FIXED: Clean Overwrite ========================= */
   const savePrivacyMappings = async () => {
     if (!session?.info?.webId) return;
     try {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
       const mappingUrl = `${podUrls[0]}${PRIVACY_MAPPING_PATH}`;
       
+      // Create a FRESH dataset to avoid duplicates/accumulation
       let dataset = createSolidDataset();
       
-      // FIXED: Use subject-based URL (ex:name, ex:age) instead of #mapping-${idx}
       privacyMappings.forEach((mapping) => {
         const shortName = schemaToExShort(mapping.fieldIri);
-        const subjectUrl = `${EX}${shortName}`; // e.g., https://example.org/privacy#name
+        // Use consistent IRI structure: https://example.org/privacy#name
+        const subjectUrl = `${EX}${shortName}`; 
         
         let thing = createThing({ url: subjectUrl });
+        
+        // Set Types
         thing = setUrl(thing, `${RDF}type`, `${DPV}PersonalData`);
+        
+        // Set Label
         thing = setStringNoLocale(thing, `${SKOS}prefLabel`, mapping.fieldLabel);
+        
+        // Set DPV Properties
         thing = setUrl(thing, `${DPV}hasPersonalData`, mapping.personalDataType);
         thing = setUrl(thing, `${DPV}hasDataCategory`, mapping.dataCategory);
-        if (mapping.domain) thing = setStringNoLocale(thing, `${EX}domain`, mapping.domain);
+        
+        // Set Domain (helper property)
+        if (mapping.domain) {
+            thing = setStringNoLocale(thing, `${EX}domain`, mapping.domain);
+        }
         
         dataset = setThing(dataset, thing);
       });
       
       await saveSolidDatasetAt(mappingUrl, dataset, { fetch: session.fetch });
       
-      toast({ title: 'Success', description: 'Privacy settings saved', status: 'success' });
-      await loadPrivacyMappings(); // Reload to confirm save
+      toast({ title: 'Success', description: 'Privacy settings saved cleanly', status: 'success' });
+      await loadPrivacyMappings(); 
       onPrivacyModalClose();
     } catch (err: any) {
       console.error('Failed to save privacy mappings:', err);
@@ -928,7 +948,6 @@ export default function AuditDashboardPage() {
     if (newPage >= 1 && newPage <= totalPages) setCurrentPage(newPage);
   };
 
-  // FIXED: Helper function with fallback matching for policy titles
   const findPolicyTitle = (violatedPolicyId: string): string => {
     const exactMatch = policies.find(p => p.id === violatedPolicyId);
     if (exactMatch) return exactMatch.title;
@@ -1055,7 +1074,7 @@ export default function AuditDashboardPage() {
             <Tab>State of the World</Tab>
           </TabList>
           <TabPanels>
-            {/* TAB 1: VIOLATION REPORT - FIXED */}
+            {/* TAB 1: VIOLATION REPORT */}
             <TabPanel>
               <Card>
                 <CardHeader>
@@ -1092,7 +1111,7 @@ export default function AuditDashboardPage() {
                       ) : (
                         <Tr>
                           <Td colSpan={5} textAlign="center">
-                            {logs.filter(l => l.violations.length > 0).length > 0 ? (
+                            {stats.violations > 0 ? (
                               <>
                                 <Text>Violations exist but may be filtered out.</Text>
                                 <Button size="xs" mt={2} onClick={() => { setDecisionFilter('all'); setDateFilter('all'); setSensitivity('all'); setAppFilter('all'); setSearch(''); }}>
@@ -1291,14 +1310,15 @@ export default function AuditDashboardPage() {
         </ModalContent>
       </Modal>
 
-      {/* PRIVACY SETTINGS MODAL - FIXED: SUBJECT-BASED, SINGLE FIELD TOGGLE */}
+      {/* PRIVACY SETTINGS MODAL */}
       <Modal isOpen={isPrivacyModalOpen} onClose={onPrivacyModalClose} size="2xl">
         <ModalOverlay /><ModalContent bg="white" color="black">
           <ModalHeader>Privacy Data Settings (DPV)</ModalHeader><ModalCloseButton />
           <ModalBody>
             <Alert status="info" mb={4}>
               <AlertIcon />
-              Fields marked as sensitive use DPV categories. Data stored at <Code>{PRIVACY_MAPPING_PATH}</Code> using subject-based mapping (ex:fieldName as subject). You can toggle individual fields.
+              Fields marked as sensitive use DPV categories. Data stored at <Code>{PRIVACY_MAPPING_PATH}</Code>. 
+              Clicking Save will overwrite this file cleanly to prevent duplicates.
             </Alert>
             {loadingPrivacy ? <Spinner /> : (
               <VStack spacing={3} align="stretch" maxH="60vh" overflowY="auto" p={2}>
