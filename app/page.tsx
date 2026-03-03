@@ -60,7 +60,6 @@ import {
   TabPanel,
   Link,
   Code,
-  Tooltip as ChakraTooltip,
   Checkbox,
 } from '@chakra-ui/react';
 import {
@@ -192,7 +191,7 @@ function generateUUID(): string {
   });
 }
 
-// ✅ Generate dct:identifier in URN UUID format
+// ✅ Generate dct:identifier in URN UUID format (auto-generated)
 function generatePolicyIdentifier(): string {
   return `urn:uuid:${generateUUID()}`;
 }
@@ -275,7 +274,7 @@ type PolicyEvaluation = {
 
 type FieldViolation = {
   violatedField: string;
-  violatedPolicy: string; // Holds the dct:identifier value
+  violatedPolicy: string;
   observedCount: number;
   allowedLimit: number;
 };
@@ -302,10 +301,10 @@ type PolicyConstraint = {
   unit?: 'hours' | 'days' | 'km';
 };
 
-// ✅ UPDATED: identifier is auto-generated
+// ✅ identifier auto-generated, not user-input
 type Policy = {
   id: string;
-  identifier?: string; // ✅ Auto-generated as urn:uuid:...
+  identifier?: string;
   title: string;
   description: string;
   targetField: string;
@@ -421,10 +420,6 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
           }
         });
       });
-    }
-    
-    if (violations.length > 0) {
-      console.log('🔍 Found violations for access:', accessId, violations);
     }
     
     return {
@@ -755,7 +750,7 @@ export default function AuditDashboardPage() {
         
         parsed.push({
           id: thing.url,
-          identifier, // ✅ Load identifier from TTL
+          identifier,
           title,
           description,
           targetField: shortIri(target),
@@ -836,7 +831,7 @@ export default function AuditDashboardPage() {
 
   useEffect(() => { loadPrivacyMappings(); }, [session]);
 
-  /* ========================= SAVE POLICY - FIXED: Auto-generate Identifier & Blank Nodes ========================= */
+  /* ========================= SAVE POLICY - FIXED ========================= */
   const savePolicy = async (policy: Policy) => {
     if (!session?.info?.webId) return;
     try {
@@ -845,14 +840,13 @@ export default function AuditDashboardPage() {
       let dataset;
       try { dataset = await getSolidDataset(policyUrl, { fetch: session.fetch }); } catch { dataset = createSolidDataset(); }
       
-      // ✅ Generate clean, human-readable subject URL (ex:policy-bloodtype-xxxx)
+      // ✅ Generate clean subject URL with blank nodes format
       const targetShort = policy.targetField.replace(/[^a-z0-9]/gi, '-').toLowerCase();
       const hash = Math.random().toString(36).slice(2, 10);
       const policySubjectUrl = `${EX_BASE}policy-${targetShort}-${hash}`;
       
       let policyThing = createThing({ url: policySubjectUrl });
       
-      // ✅ Set core policy properties
       policyThing = setUrl(policyThing, `${RDF}type`, `${ODRL}Policy`);
       
       // ✅ Auto-generate dct:identifier if not exists
@@ -864,25 +858,22 @@ export default function AuditDashboardPage() {
       policyThing = setStringNoLocale(policyThing, `${DCT}title`, policy.title);
       policyThing = setStringNoLocale(policyThing, `${DCT}description`, policy.description || '');
       
-      // ✅ Format timestamp without milliseconds: "2026-02-13T09:00:00Z"
+      // ✅ Format timestamp without milliseconds
       const createdDate = policy.createdAt || new Date();
       const timestamp = createdDate.toISOString().replace(/\.\d{3}Z$/, 'Z');
       policyThing = setDatetime(policyThing, `${DCT}created`, new Date(timestamp));
       
-      // ✅ Add dct:creator
+      // ✅ Add dct:creator and odrl:profile
       policyThing = setUrl(policyThing, `${DCT}creator`, `${EX_BASE}pod-owner`);
-      
-      // ✅ Add odrl:profile
       policyThing = setUrl(policyThing, `${ODRL}profile`, 'https://w3id.org/dpv/odrl');
       
-      // Set target
       const fullTargetIri = Object.keys(FIELD_LABELS).find(iri => shortIri(cleanIRI(iri)) === policy.targetField) || policy.targetField;
       policyThing = setUrl(policyThing, `${ODRL}target`, fullTargetIri);
       policyThing = setBoolean(policyThing, `${FORCE}policyActive`, policy.active);
       
       const constraint = policy.constraints[0];
       if (constraint) {
-        // ✅ Use blank nodes with format _:b752_n3-x (as requested)
+        // ✅ Use blank nodes with format _:b752_n3-x
         const blankPrefix = `b752_n3-${Date.now().toString(36).slice(-4)}-${Math.random().toString(36).slice(2, 4)}`;
         const constraintBlankId = `_:${blankPrefix}-constraint`;
         const permissionBlankId = `_:${blankPrefix}-permission`;
@@ -906,21 +897,17 @@ export default function AuditDashboardPage() {
           setStringNoLocale(constraintThing, `${ODRL}rightOperand`, String(constraint.value));
         }
         
-        // Set permission properties
         setUrl(permissionThing, `${ODRL}assigner`, `${EX_BASE}pod-owner`);
         setUrl(permissionThing, `${ODRL}assignee`, `${EX_BASE}any-app`);
         setUrl(permissionThing, `${ODRL}action`, `${ODRL}read`);
         setUrl(permissionThing, `${ODRL}constraint`, constraintThing.url);
         
-        // Set prohibition properties (as in your example)
         setUrl(prohibitionThing, `${ODRL}assignee`, `${EX_BASE}any-app`);
         setUrl(prohibitionThing, `${ODRL}action`, `${ODRL}distribute`);
         
-        // Link permission and prohibition to policy
         policyThing = addUrl(policyThing, `${ODRL}permission`, permissionThing.url);
         policyThing = addUrl(policyThing, `${ODRL}prohibition`, prohibitionThing.url);
         
-        // Add things to dataset (blank nodes will be serialized as _:b752_n3-x)
         dataset = setThing(dataset, constraintThing);
         dataset = setThing(dataset, permissionThing);
         dataset = setThing(dataset, prohibitionThing);
@@ -1438,7 +1425,6 @@ export default function AuditDashboardPage() {
                               variant="outline" 
                               colorScheme="blue"
                               onClick={() => {
-                                // Optional: Scroll to field breakdown section
                                 const element = document.getElementById(`fields-${log.id}`);
                                 if (element) element.scrollIntoView({ behavior: 'smooth' });
                               }}
