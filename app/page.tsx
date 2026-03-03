@@ -96,7 +96,6 @@ import {
   setInteger,
   ThingPersisted,
   SolidDataset,
-  isNamedNode,
 } from '@inrupt/solid-client';
 
 /* ======================================================
@@ -104,7 +103,7 @@ CONSTANTS & ONTOLOGY PREFIXES
 ====================================================== */
 const DPV = 'https://w3id.org/dpv#';
 const DCT = 'http://purl.org/dc/terms/';
-const EX = 'https://example.org/privacy#'; // Updated for DPV-style mapping
+const EX = 'https://example.org/privacy#';
 const EX_BASE = 'https://example.org/';
 const ODRL = 'http://www.w3.org/ns/odrl/2/';
 const XSD = 'http://www.w3.org/2001/XMLSchema#';
@@ -219,7 +218,6 @@ function isSensitiveCategory(categoryIri: string): boolean {
   return SENSITIVE_CATEGORIES.some(s => cleanIRI(s) === clean);
 }
 
-// Convert schema.org IRI to EX short name for TTL subject
 function schemaToExShort(schemaIri: string): string {
   const clean = cleanIRI(schemaIri);
   const fieldKey = Object.keys(FIELD_LABELS).find(key => cleanIRI(key) === clean);
@@ -230,7 +228,6 @@ function schemaToExShort(schemaIri: string): string {
   return clean.split('#').pop()?.split('/').pop() || 'unknown';
 }
 
-// Resolve EX short name back to schema.org IRI
 function exShortToSchema(shortName: string): string | null {
   for (const [schemaIri, label] of Object.entries(FIELD_LABELS)) {
     const expectedShort = schemaToExShort(schemaIri);
@@ -447,10 +444,8 @@ function parseStateOfTheWorld(thing: any, dataset: SolidDataset): StateOfTheWorl
     const countUrls = getUrlAll(thing, `${SOTW}count`);
     
     countUrls.forEach((countUrl: string) => {
-      // Handle both named nodes and blank nodes
       let countThing;
       if (countUrl.startsWith('_:')) {
-        // Blank node: search through all things in dataset
         countThing = getThingAll(dataset).find((t: any) => t.url === countUrl);
       } else {
         countThing = getThingAll(dataset).find((t: any) => cleanIRI(t.url) === cleanIRI(countUrl));
@@ -483,7 +478,7 @@ function parseStateOfTheWorld(thing: any, dataset: SolidDataset): StateOfTheWorl
 }
 
 /* ======================================================
-PARSE PRIVACY MAPPING - DPV STYLE (FIXED: Use Subject as Field IRI)
+PARSE PRIVACY MAPPING - DPV STYLE (SUBJECT-BASED)
 ====================================================== */
 function parsePrivacyMapping(thing: any): PrivacyMapping | null {
   try {
@@ -494,11 +489,9 @@ function parsePrivacyMapping(thing: any): PrivacyMapping | null {
       return null;
     }
     
-    // FIXED: Use the subject URL as the field identifier
     const subjectIri = cleanIRI(thing.url);
-    
-    // Try to resolve ex:shortName to schema.org IRI
     let fieldIri = subjectIri;
+    
     if (subjectIri.includes('example.org/privacy#')) {
       const shortName = subjectIri.split('#').pop();
       if (shortName) {
@@ -513,7 +506,6 @@ function parsePrivacyMapping(thing: any): PrivacyMapping | null {
     const dataCategory = getUrlAll(thing, `${DPV}hasDataCategory`)[0] || `${DPV}PersonalData`;
     const personalDataType = getUrlAll(thing, `${DPV}hasPersonalData`)[0] || `${DPV}Data`;
     const domain = getStringNoLocaleAll(thing, `${EX}domain`)[0];
-    
     const isSensitive = isSensitiveCategory(dataCategory);
     
     return {
@@ -622,7 +614,6 @@ export default function AuditDashboardPage() {
         console.log(`📊 Total parsed entries: ${parsed.length}`);
         console.log(`📊 Entries with violations: ${parsed.filter(l => l.violations.length > 0).length}`);
         
-        // Debug: Log all violations found
         parsed.forEach(log => {
           if (log.violations.length > 0) {
             console.log('⚠️ Violation found:', {
@@ -694,7 +685,6 @@ export default function AuditDashboardPage() {
         }
       });
       
-      // Fallback with sample data matching your TTL structure
       if (!sotwEntry) {
         console.log('⚠️ No SOTW entry found, creating fallback with sample data');
         sotwEntry = {
@@ -711,7 +701,6 @@ export default function AuditDashboardPage() {
       setSotwData(sotwEntry);
     } catch (err: any) {
       console.error('Failed to load State of the World:', err);
-      // Fallback with sample data
       setSotwData({
         id: 'fallback',
         currentTime: new Date('2026-03-03T04:26:14.566Z'),
@@ -815,7 +804,7 @@ export default function AuditDashboardPage() {
   };
 
   /* =========================
-  LOAD PRIVACY MAPPINGS - DPV STYLE (FIXED)
+  LOAD PRIVACY MAPPINGS - DPV STYLE
   ========================= */
   const loadPrivacyMappings = async () => {
     if (!session?.info?.webId) return;
@@ -842,7 +831,6 @@ export default function AuditDashboardPage() {
         console.log('Privacy mapping file not found or unreadable. Will create on save.', e);
       }
       
-      // Create final mappings: merge saved DPV mappings with FIELD_LABELS definitions
       const savedMap = new Map(savedMappings.map(m => [cleanIRI(m.fieldIri), m]));
       
       const finalMappings: PrivacyMapping[] = Object.entries(FIELD_LABELS).map(([iri, label]) => {
@@ -863,7 +851,6 @@ export default function AuditDashboardPage() {
         };
       });
       
-      // Add any saved mappings that aren't in FIELD_LABELS (dynamic/custom fields)
       savedMappings.forEach(saved => {
         if (!finalMappings.find(m => cleanIRI(m.fieldIri) === cleanIRI(saved.fieldIri))) {
           finalMappings.push(saved);
@@ -956,7 +943,7 @@ export default function AuditDashboardPage() {
   };
 
   /* =========================
-  SAVE PRIVACY MAPPINGS - DPV STYLE (FIXED: Use Subject as Field IRI)
+  SAVE PRIVACY MAPPINGS - DPV STYLE (SUBJECT-BASED)
   ========================= */
   const savePrivacyMappings = async () => {
     if (!session?.info?.webId) return;
@@ -967,25 +954,16 @@ export default function AuditDashboardPage() {
       let dataset = createSolidDataset();
       
       privacyMappings.forEach((mapping) => {
-        // FIXED: Use ex:shortName as subject URL (not a property)
         const shortName = schemaToExShort(mapping.fieldIri);
         const subjectUrl = `${EX}${shortName}`;
         
         let thing = createThing({ url: subjectUrl });
         
-        // Type: dpv:PersonalData
         thing = setUrl(thing, `${RDF}type`, `${DPV}PersonalData`);
-        
-        // skos:prefLabel
         thing = setStringNoLocale(thing, `${SKOS}prefLabel`, mapping.fieldLabel);
-        
-        // dpv:hasPersonalData
         thing = setUrl(thing, `${DPV}hasPersonalData`, mapping.personalDataType);
-        
-        // dpv:hasDataCategory (determines sensitivity)
         thing = setUrl(thing, `${DPV}hasDataCategory`, mapping.dataCategory);
         
-        // ex:domain (custom metadata)
         if (mapping.domain) {
           thing = setStringNoLocale(thing, `${EX}domain`, mapping.domain);
         }
@@ -1001,7 +979,6 @@ export default function AuditDashboardPage() {
         status: 'success'
       });
       
-      // Reload to ensure consistency
       await loadPrivacyMappings();
       onPrivacyModalClose();
     } catch (err: any) {
@@ -1315,7 +1292,7 @@ export default function AuditDashboardPage() {
               </Card>
             </TabPanel>
 
-            {/* TAB 2: STATE OF THE WORLD - DISPLAYS YOUR TTL STRUCTURE */}
+            {/* TAB 2: STATE OF THE WORLD */}
             <TabPanel>
               <Card>
                 <CardHeader>
@@ -1331,7 +1308,6 @@ export default function AuditDashboardPage() {
                     <Flex justify="center" py={10}><Spinner /></Flex>
                   ) : sotwData ? (
                     <VStack align="stretch" spacing={4}>
-                      {/* Current Time & Location */}
                       <HStack spacing={6} wrap="wrap">
                         <Box>
                           <Text fontSize="xs" color="gray.600">Current Time</Text>
@@ -1345,7 +1321,6 @@ export default function AuditDashboardPage() {
                       
                       <Divider />
                       
-                      {/* Count Values per Field - Displaying your TTL structure data */}
                       <Text fontWeight="medium" mb={2}>Access Counts by Field</Text>
                       <SimpleGrid columns={{ base: 1, md: 2 }} spacing={3}>
                         {sotwData.counts.map((count) => (
@@ -1507,14 +1482,22 @@ export default function AuditDashboardPage() {
                                 nc[idx] = { ...constraint, type: e.target.value as PolicyConstraint['type'], value: e.target.value === 'location' ? '' : 1 };
                                 setNewPolicy((p) => ({ ...p, constraints: nc }));
                               }}
-                              size="sm" width="150px">
+                              size="sm" width="150px"
+                            >
                               <option value="count">Access Count</option>
                               <option value="timeWindow">Time Window</option>
                               <option value="location">Location</option>
                             </Select>
-                            <Select value={constraint.operator} onChange={(e) => {
-                              const nc = [...(newPolicy.constraints || [])]; nc[idx] = { ...constraint, operator: e.target.value as PolicyConstraint['operator'] }; setNewPolicy((p) => ({ ...p, constraints: nc }));
-                            }} size="sm" width="100px">
+                            <Select 
+                              value={constraint.operator} 
+                              onChange={(e) => {
+                                const nc = [...(newPolicy.constraints || [])]; 
+                                nc[idx] = { ...constraint, operator: e.target.value as PolicyConstraint['operator'] }; 
+                                setNewPolicy((p) => ({ ...p, constraints: nc }));
+                              }} 
+                              size="sm" 
+                              width="100px"
+                            >
                               <option value="lteq">≤</option>
                               <option value="gteq">≥</option>
                               <option value="eq">=</option>
@@ -1524,16 +1507,28 @@ export default function AuditDashboardPage() {
                                 placeholder="City, Region, or Country"
                                 value={constraint.value as string}
                                 onChange={(e) => {
-                                  const nc = [...(newPolicy.constraints || [])]; nc[idx] = { ...constraint, value: e.target.value }; setNewPolicy((p) => ({ ...p, constraints: nc }));
+                                  const nc = [...(newPolicy.constraints || [])]; 
+                                  nc[idx] = { ...constraint, value: e.target.value }; 
+                                  setNewPolicy((p) => ({ ...p, constraints: nc }));
                                 }}
                                 size="sm"
                               />
                             ) : (
-                              <NumberInput value={constraint.value as number} onChange={(_, val) => {
-                                const nc = [...(newPolicy.constraints || [])]; nc[idx] = { ...constraint, value: val }; setNewPolicy((p) => ({ ...p, constraints: nc }));
-                              }} size="sm" width="100px">
+                              <NumberInput 
+                                value={constraint.value as number} 
+                                onChange={(_, val) => {
+                                  const nc = [...(newPolicy.constraints || [])]; 
+                                  nc[idx] = { ...constraint, value: val }; 
+                                  setNewPolicy((p) => ({ ...p, constraints: nc }));
+                                }} 
+                                size="sm" 
+                                width="100px"
+                              >
                                 <NumberInputField />
-                                <NumberInputStepper><NumberIncrementStepper /><NumberDecrementStepper /></NumberInputStepper>
+                                <NumberInputStepper>
+                                  <NumberIncrementStepper />
+                                  <NumberDecrementStepper />
+                                </NumberInputStepper>
                               </NumberInput>
                             )}
                             <Text fontSize="sm" color="gray.600">
@@ -1575,10 +1570,16 @@ export default function AuditDashboardPage() {
                         <Td><Tag size="sm" colorScheme="purple">{policy.targetField}</Tag></Td>
                         <Td>
                           {policy.constraints.map((c, idx) => (
-                            <Text key={`${policy.id}-c-${idx}`} fontSize="xs">{c.type === 'count' ? `Count ${c.operator} ${c.value}` : c.type === 'timeWindow' ? `Time ${c.operator} ${c.value}` : `Location ${c.operator} ${c.value}`}</Text>
+                            <Text key={`${policy.id}-c-${idx}`} fontSize="xs">
+                              {c.type === 'count' ? `Count ${c.operator} ${c.value}` : 
+                               c.type === 'timeWindow' ? `Time ${c.operator} ${c.value}` : 
+                               `Location ${c.operator} ${c.value}`}
+                            </Text>
                           ))}
                         </Td>
-                        <Td><Switch size="sm" isChecked={policy.active} onChange={() => handleTogglePolicyActive(policy)} /></Td>
+                        <Td>
+                          <Switch size="sm" isChecked={policy.active} onChange={() => handleTogglePolicyActive(policy)} />
+                        </Td>
                         <Td>
                           <HStack spacing={2}>
                             <IconButton size="sm" icon={<EditIcon />} aria-label="Edit" onClick={() => handleEditPolicy(policy)} />
@@ -1592,11 +1593,13 @@ export default function AuditDashboardPage() {
               )}
             </Box>
           </ModalBody>
-          <ModalFooter><Button variant="ghost" onClick={onPolicyModalClose}>Close</Button></ModalFooter>
+          <ModalFooter>
+            <Button variant="ghost" onClick={onPolicyModalClose}>Close</Button>
+          </ModalFooter>
         </ModalContent>
       </Modal>
 
-      {/* PRIVACY SETTINGS MODAL - DPV STYLE (FIXED) */}
+      {/* PRIVACY SETTINGS MODAL - DPV STYLE */}
       <Modal isOpen={isPrivacyModalOpen} onClose={onPrivacyModalClose} size="2xl">
         <ModalOverlay />
         <ModalContent bg="white" color="black">
