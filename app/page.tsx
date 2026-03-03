@@ -1127,7 +1127,7 @@ export default function AuditDashboardPage() {
             <Tab>State of the World</Tab>
           </TabList>
           <TabPanels>
-            {/* TAB 1: VIOLATION REPORT - FIXED */}
+            {/* TAB 1: VIOLATION REPORT - FIXED WITH FALLBACK */}
             <TabPanel>
               <Card>
                 <CardHeader>
@@ -1148,29 +1148,53 @@ export default function AuditDashboardPage() {
                     <Tbody>
                       {currentViolationLogs.length > 0 ? (
                         currentViolationLogs.map((log) =>
-                          log.violations.map((v, idx) => {
-                            // FIXED: Use helper matching violatedPolicy IRI with policy.targetIRI
-                            const matchedPolicy = findPolicyByViolation(v.violatedPolicy);
-                            const policyTitle = matchedPolicy ? matchedPolicy.title : 'Unknown Policy';
-                            const policyIdDisplay = matchedPolicy ? shortIri(matchedPolicy.id) : shortIri(v.violatedPolicy);
-                            
-                            return (
-                              <Tr key={`${log.accessId}-${v.violatedField}-${idx}`} bg="red.50" cursor="pointer" _hover={{ bg: 'red.100' }} onClick={() => { setSelectedLog(log); onDetailModalOpen(); }}>
-                                <Td>{log.startedAt?.toLocaleString()}</Td>
-                                <Td textTransform="capitalize">{log.app}</Td>
-                                <Td>{getFieldLabel(v.violatedField)}</Td>
-                                <Td fontWeight="medium">{policyTitle}</Td>
-                                <Td><Code fontSize="xs">{policyIdDisplay}</Code></Td>
-                              </Tr>
-                            );
-                          })
+                          // CASE 1: Log has explicit violations from bundle
+                          log.violations.length > 0 ? (
+                            log.violations.map((v, idx) => {
+                              const matchedPolicy = findPolicyByViolation(v.violatedPolicy);
+                              const policyTitle = matchedPolicy ? matchedPolicy.title : 'Unknown Policy';
+                              const policyIdDisplay = matchedPolicy ? shortIri(matchedPolicy.id) : shortIri(v.violatedPolicy);
+                              
+                              return (
+                                <Tr key={`${log.accessId}-${v.violatedField}-${idx}`} bg="red.50" cursor="pointer" _hover={{ bg: 'red.100' }} onClick={() => { setSelectedLog(log); onDetailModalOpen(); }}>
+                                  <Td>{log.startedAt?.toLocaleString()}</Td>
+                                  <Td textTransform="capitalize">{log.app}</Td>
+                                  <Td>{getFieldLabel(v.violatedField)}</Td>
+                                  <Td fontWeight="medium">{policyTitle}</Td>
+                                  <Td><Code fontSize="xs">{policyIdDisplay}</Code></Td>
+                                </Tr>
+                              );
+                            })
+                          ) : 
+                          // CASE 2: Fallback - decision is VIOLATION but no explicit bundle, show sensitive fields as violations
+                          log.decision === 'VIOLATION' && log.fields.some(f => f.isSensitive) ? (
+                            log.fields.filter(f => f.isSensitive).map((field, idx) => {
+                              // Try to find matching policy by field IRI
+                              const matchedPolicy = policies.find(p => 
+                                cleanIRI(p.targetIRI || '') === cleanIRI(field.fieldIri) || 
+                                p.targetField === shortIri(field.fieldIri)
+                              );
+                              const policyTitle = matchedPolicy ? matchedPolicy.title : 'Sensitive Data Policy';
+                              const policyIdDisplay = matchedPolicy ? shortIri(matchedPolicy.id) : shortIri(field.fieldIri);
+                              
+                              return (
+                                <Tr key={`${log.accessId}-${field.fieldIri}-${idx}`} bg="red.50" cursor="pointer" _hover={{ bg: 'red.100' }} onClick={() => { setSelectedLog(log); onDetailModalOpen(); }}>
+                                  <Td>{log.startedAt?.toLocaleString()}</Td>
+                                  <Td textTransform="capitalize">{log.app}</Td>
+                                  <Td>{getFieldLabel(field.fieldIri)}</Td>
+                                  <Td fontWeight="medium">{policyTitle}</Td>
+                                  <Td><Code fontSize="xs">{policyIdDisplay}</Code></Td>
+                                </Tr>
+                              );
+                            })
+                          ) : null
                         )
                       ) : (
                         <Tr>
                           <Td colSpan={5} textAlign="center">
-                            {logs.filter(l => l.violations.length > 0).length > 0 ? (
+                            {logs.filter(l => l.decision === 'VIOLATION').length > 0 ? (
                               <>
-                                <Text>Violations exist but may be filtered out.</Text>
+                                <Text>Violations exist but may be filtered out or lack explicit violation details.</Text>
                                 <Button size="xs" mt={2} onClick={() => { setDecisionFilter('all'); setDateFilter('all'); setSensitivity('all'); setAppFilter('all'); setSearch(''); }}>
                                   Clear filters to show all
                                 </Button>
