@@ -98,7 +98,6 @@ import {
   addUrl,
   ThingPersisted,
   SolidDataset,
-  // isNamedNode DIHAPUS: tidak tersedia di @inrupt/solid-client
 } from '@inrupt/solid-client';
 
 /* ======================================================
@@ -125,7 +124,7 @@ const PRIVACY_MAPPING_PATH = 'private/dpv-mapping.ttl';
 const STATE_OF_WORLD_PATH = 'private/audit/monitoring/state-of-the-world.ttl';
 
 /* ======================================================
-FIELD LABEL MAPPING (Schema.org -> Label)
+FIELD LABEL MAPPING
 ====================================================== */
 const FIELD_LABELS: Record<string, string> = {
   'https://schema.org/bloodType': 'Blood Type',
@@ -221,7 +220,6 @@ function isSensitiveCategory(categoryIri: string): boolean {
   return SENSITIVE_CATEGORIES.some(s => cleanIRI(s) === clean);
 }
 
-// Convert schema.org IRI to EX short name for TTL subject
 function schemaToExShort(schemaIri: string): string {
   const clean = cleanIRI(schemaIri);
   const fieldKey = Object.keys(FIELD_LABELS).find(key => cleanIRI(key) === clean);
@@ -232,7 +230,6 @@ function schemaToExShort(schemaIri: string): string {
   return clean.split('#').pop()?.split('/').pop() || 'unknown';
 }
 
-// Resolve EX short name back to schema.org IRI
 function exShortToSchema(shortName: string): string | null {
   for (const [schemaIri, label] of Object.entries(FIELD_LABELS)) {
     const expectedShort = schemaToExShort(schemaIri);
@@ -435,7 +432,7 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
 }
 
 /* ======================================================
-PARSE STATE OF THE WORLD - FIXED: Take Latest Count per Target
+PARSE STATE OF THE WORLD
 ====================================================== */
 function parseStateOfTheWorld(thing: any, dataset: SolidDataset): StateOfTheWorld | null {
   try {
@@ -445,7 +442,6 @@ function parseStateOfTheWorld(thing: any, dataset: SolidDataset): StateOfTheWorl
     const currentTime = getDatetime(thing, `${SOTW}currentTime`) ?? null;
     const currentLocation = cleanIRI(getUrlAll(thing, `${SOTW}currentLocation`)[0] ?? '');
     
-    // FIXED: Group counts by target IRI and keep only the highest countValue (latest)
     const countsByTarget = new Map<string, SotwCount>();
     const countUrls = getUrlAll(thing, `${SOTW}count`);
     
@@ -467,8 +463,6 @@ function parseStateOfTheWorld(thing: any, dataset: SolidDataset): StateOfTheWorl
             targetIRI: target,
             countValue,
           };
-          
-          // Keep the entry with the highest countValue for each target
           const existing = countsByTarget.get(target);
           if (!existing || countValue > existing.countValue) {
             countsByTarget.set(target, newCount);
@@ -477,13 +471,11 @@ function parseStateOfTheWorld(thing: any, dataset: SolidDataset): StateOfTheWorl
       }
     });
     
-    const counts = Array.from(countsByTarget.values());
-    
     return {
       id: thing.url,
       currentTime,
       currentLocation: shortIri(currentLocation),
-      counts,
+      counts: Array.from(countsByTarget.values()),
     };
   } catch (err) {
     console.error('Error parsing State of the World:', err);
@@ -492,29 +484,23 @@ function parseStateOfTheWorld(thing: any, dataset: SolidDataset): StateOfTheWorl
 }
 
 /* ======================================================
-PARSE PRIVACY MAPPING - DPV STYLE (SUBJECT-BASED)
+PARSE PRIVACY MAPPING - DPV STYLE
 ====================================================== */
 function parsePrivacyMapping(thing: any): PrivacyMapping | null {
   try {
     const types = getUrlAll(thing, `${RDF}type`);
     const hasDomain = getUrlAll(thing, `${EX}domain`).length > 0;
     
-    if (!types.some((t: string) => t.includes('PersonalData')) && !hasDomain) {
-      return null;
-    }
+    if (!types.some((t: string) => t.includes('PersonalData')) && !hasDomain) return null;
     
-    // FIXED: Use the subject URL as the field identifier
     const subjectIri = cleanIRI(thing.url);
-    
-    // Try to resolve ex:shortName to schema.org IRI
     let fieldIri = subjectIri;
+    
     if (subjectIri.includes('example.org/privacy#')) {
       const shortName = subjectIri.split('#').pop();
       if (shortName) {
         const schemaMatch = exShortToSchema(shortName);
-        if (schemaMatch) {
-          fieldIri = schemaMatch;
-        }
+        if (schemaMatch) fieldIri = schemaMatch;
       }
     }
     
@@ -894,7 +880,7 @@ export default function AuditDashboardPage() {
     }
   };
 
-  /* ========================= SAVE PRIVACY MAPPINGS - FIXED: SUBJECT-BASED ========================= */
+  /* ========================= SAVE PRIVACY MAPPINGS ========================= */
   const savePrivacyMappings = async () => {
     if (!session?.info?.webId) return;
     try {
@@ -1392,7 +1378,7 @@ export default function AuditDashboardPage() {
         </ModalContent>
       </Modal>
 
-      {/* PRIVACY SETTINGS MODAL - FIXED: SUBJECT-BASED, SINGLE FIELD TOGGLE */}
+      {/* PRIVACY SETTINGS MODAL */}
       <Modal isOpen={isPrivacyModalOpen} onClose={onPrivacyModalClose} size="2xl">
         <ModalOverlay /><ModalContent bg="white" color="black">
           <ModalHeader>Privacy Data Settings (DPV)</ModalHeader><ModalCloseButton />
