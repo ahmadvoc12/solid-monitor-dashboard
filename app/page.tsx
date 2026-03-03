@@ -96,6 +96,7 @@ import {
   setInteger,
   ThingPersisted,
   SolidDataset,
+  addUrl,
 } from '@inrupt/solid-client';
 
 /* ======================================================
@@ -103,12 +104,15 @@ CONSTANTS & ONTOLOGY PREFIXES
 ====================================================== */
 const DPV = 'https://w3id.org/dpv#';
 const DCT = 'http://purl.org/dc/terms/';
-const EX = 'https://example.org/';
+const EX = 'https://example.org/privacy#'; // Updated for DPV-style mapping
+const EX_BASE = 'https://example.org/';
 const ODRL = 'http://www.w3.org/ns/odrl/2/';
 const XSD = 'http://www.w3.org/2001/XMLSchema#';
 const FORCE = 'https://w3id.org/force/compliance-report#';
 const PROV = 'http://www.w3.org/ns/prov#';
 const RDF = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
+const SKOS = 'http://www.w3.org/2004/02/skos/core#';
+const SOTW = 'https://w3id.org/force/sotw#';
 
 /* ======================================================
 PATHS
@@ -116,9 +120,10 @@ PATHS
 const ACCESS_LOG_PATH = 'private/audit/access/access-log.ttl';
 const POLICY_PATH = 'private/audit/access/monitor-policy.ttl';
 const PRIVACY_MAPPING_PATH = 'private/dpv-mapping.ttl';
+const STATE_OF_WORLD_PATH = 'private/audit/monitoring/state-of-the-world.ttl';
 
 /* ======================================================
-FIELD LABEL MAPPING
+FIELD LABEL MAPPING (Schema.org -> Label)
 ====================================================== */
 const FIELD_LABELS: Record<string, string> = {
   'https://schema.org/bloodType': 'Blood Type',
@@ -130,6 +135,15 @@ const FIELD_LABELS: Record<string, string> = {
   'https://schema.org/gender': 'Gender',
   'https://schema.org/hairColor': 'Hair Colour',
 };
+
+/* ======================================================
+SENSITIVE CATEGORIES (DPV)
+====================================================== */
+const SENSITIVE_CATEGORIES = [
+  `${DPV}SensitivePersonalData`,
+  `${DPV}SpecialCategoryPersonalData`,
+  `${DPV}IdentifyingPersonalData`,
+];
 
 /* ======================================================
 UTILS
@@ -200,6 +214,23 @@ function extractAppFromThing(thing: any): string {
   return 'Unknown App';
 }
 
+// Check if a DPV category indicates sensitive data
+function isSensitiveCategory(categoryIri: string): boolean {
+  const clean = cleanIRI(categoryIri);
+  return SENSITIVE_CATEGORIES.some(s => cleanIRI(s) === clean);
+}
+
+// Convert schema.org IRI to EX short name for TTL subject
+function schemaToExShort(schemaIri: string): string {
+  const clean = cleanIRI(schemaIri);
+  const fieldKey = Object.keys(FIELD_LABELS).find(key => cleanIRI(key) === clean);
+  if (fieldKey) {
+    const fieldName = fieldKey.split('/').pop()?.split('#').pop();
+    if (fieldName) return fieldName.charAt(0).toLowerCase() + fieldName.slice(1);
+  }
+  return clean.split('#').pop()?.split('/').pop() || 'unknown';
+}
+
 /* ======================================================
 TYPES
 ====================================================== */
@@ -260,11 +291,25 @@ type Policy = {
 };
 
 type PrivacyMapping = {
-  fieldIri: string;
-  fieldLabel: string;
-  isSensitive: boolean;
-  dataCategory: string;
-  personalDataType: string;
+  fieldIri: string;      // Full IRI: https://schema.org/name
+  fieldLabel: string;    // Human label: "Name"
+  isSensitive: boolean;  // Derived from DPV category
+  dataCategory: string;  // DPV category IRI
+  personalDataType: string; // DPV personal data type IRI
+  domain?: string;       // ex:domain value
+};
+
+type SotwCount = {
+  targetField: string;
+  targetIRI: string;
+  countValue: number;
+};
+
+type StateOfTheWorld = {
+  id: string;
+  currentTime: Date | null;
+  currentLocation: string;
+  counts: SotwCount[];
 };
 
 /* ======================================================
@@ -274,13 +319,16 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
   try {
     const types = getUrlAll(thing, `${RDF}type`);
     if (!types.some((t: string) => t.includes('Activity'))) return null;
+    
     const decision = getStringNoLocaleAll(thing, `${FORCE}decision`)[0];
     if (!decision) return null;
+    
     const accessId = thing.url.split('#').pop() ?? thing.url;
     const startedAt = getDatetime(thing, `${PROV}startedAtTime`) ?? null;
     const app = extractAppFromThing(thing);
     const accessMethod = getStringNoLocaleAll(thing, `${FORCE}accessMethod`)[0] ?? 'GET';
     const accessedResource = cleanIRI(getUrlAll(thing, `${FORCE}accessedResource`)[0] ?? '');
+    
     const fields: AccessedField[] = [];
     const fieldsBundle = getUrlAll(thing, `${FORCE}hasFieldsBundle`)[0];
     if (fieldsBundle) {
@@ -289,6 +337,7 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
         if (!fieldTypes.some((t: string) => t.includes('AccessedDataField'))) return;
         const belongsToBundle = getUrlAll(fieldThing, `${FORCE}belongsToBundle`)[0];
         if (!bundlesMatch(belongsToBundle, fieldsBundle)) return;
+        
         const rawIri = getUrlAll(fieldThing, `${FORCE}fieldIRI`)[0] ?? '';
         const cleanIri = cleanIRI(rawIri);
         fields.push({
@@ -301,6 +350,7 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
         });
       });
     }
+    
     const policyEvaluations: PolicyEvaluation[] = [];
     const policyBundle = getUrlAll(thing, `${FORCE}hasPolicyBundle`)[0];
     if (policyBundle) {
@@ -309,6 +359,7 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
         if (!evalTypes.some((t: string) => t.includes('PolicyEvaluation'))) return;
         const belongsToBundle = getUrlAll(evalThing, `${FORCE}belongsToBundle`)[0];
         if (!bundlesMatch(belongsToBundle, policyBundle)) return;
+        
         policyEvaluations.push({
           evaluatedPolicy: cleanIRI(getUrlAll(evalThing, `${FORCE}evaluatedPolicy`)[0] ?? ''),
           evaluationResult: (getStringNoLocaleAll(evalThing, `${FORCE}evaluationResult`)[0] as 'ALLOWED' | 'VIOLATION') ?? 'ALLOWED',
@@ -317,18 +368,22 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
         });
       });
     }
+    
     const violations: FieldViolation[] = [];
     const violatedPolicies: string[] = [];
     const violationBundle = getUrlAll(thing, `${FORCE}hasViolationBundle`)[0];
+    
     if (violationBundle) {
       getThingAll(dataset).forEach((violThing: any) => {
         const violTypes = getUrlAll(violThing, `${RDF}type`);
         if (!violTypes.some((t: string) => t.includes('PolicyViolation'))) return;
         const belongsToBundle = getUrlAll(violThing, `${FORCE}belongsToBundle`)[0];
         if (!bundlesMatch(belongsToBundle, violationBundle)) return;
+        
         getUrlAll(violThing, `${FORCE}violatedPolicy`).forEach((p: string) =>
           violatedPolicies.push(cleanIRI(p))
         );
+        
         getUrlAll(violThing, `${FORCE}hasFieldViolation`).forEach((fvUrl: string) => {
           const fvThing = getThingAll(dataset).find((t: any) => t.url === fvUrl);
           if (fvThing) {
@@ -342,6 +397,11 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
         });
       });
     }
+    
+    if (violations.length > 0) {
+      console.log('🔍 Found violations for access:', accessId, violations);
+    }
+    
     return {
       id: thing.url,
       accessId,
@@ -363,6 +423,99 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
 }
 
 /* ======================================================
+PARSE STATE OF THE WORLD
+====================================================== */
+function parseStateOfTheWorld(thing: any): StateOfTheWorld | null {
+  try {
+    const types = getUrlAll(thing, `${RDF}type`);
+    if (!types.some((t: string) => t.includes('SotW') || t.includes('sotw:SotW'))) return null;
+    
+    const currentTime = getDatetime(thing, `${SOTW}currentTime`) ?? null;
+    const currentLocation = cleanIRI(getUrlAll(thing, `${SOTW}currentLocation`)[0] ?? '');
+    
+    const counts: SotwCount[] = [];
+    const countUrls = getUrlAll(thing, `${SOTW}count`);
+    
+    countUrls.forEach((countUrl: string) => {
+      const countThing = getThingAll(thing.dataset).find((t: any) => t.url === countUrl);
+      if (countThing) {
+        const target = cleanIRI(getUrlAll(countThing, `${ODRL}target`)[0] ?? '');
+        const countValue = getInteger(countThing, `${SOTW}countValue`) ?? 0;
+        
+        if (target) {
+          counts.push({
+            targetField: shortIri(target),
+            targetIRI: target,
+            countValue,
+          });
+        }
+      }
+    });
+    
+    return {
+      id: thing.url,
+      currentTime,
+      currentLocation: shortIri(currentLocation),
+      counts,
+    };
+  } catch (err) {
+    console.error('Error parsing State of the World:', err);
+    return null;
+  }
+}
+
+/* ======================================================
+PARSE PRIVACY MAPPING - DPV STYLE
+====================================================== */
+function parsePrivacyMapping(thing: any): PrivacyMapping | null {
+  try {
+    // Check if thing has dpv:PersonalData type or ex:domain (our custom marker)
+    const types = getUrlAll(thing, `${RDF}type`);
+    const hasDomain = getUrlAll(thing, `${EX}domain`).length > 0;
+    
+    if (!types.some((t: string) => t.includes('PersonalData')) && !hasDomain) {
+      return null;
+    }
+    
+    // Subject IRI is the field IRI (e.g., ex:identifier -> https://example.org/privacy#identifier)
+    const subjectIri = cleanIRI(thing.url);
+    
+    // Try to resolve to schema.org IRI if it's an ex: prefixed short name
+    let fieldIri = subjectIri;
+    if (subjectIri.includes('example.org/privacy#')) {
+      const shortName = subjectIri.split('#').pop();
+      // Map back to schema.org if possible
+      const schemaMatch = Object.entries(FIELD_LABELS).find(([schemaIri]) => 
+        schemaIri.toLowerCase().includes(shortName?.toLowerCase() || '')
+      );
+      if (schemaMatch) {
+        fieldIri = cleanIRI(schemaMatch[0]);
+      }
+    }
+    
+    const fieldLabel = getStringNoLocaleAll(thing, `${SKOS}prefLabel`)[0] || getFieldLabel(fieldIri);
+    const dataCategory = getUrlAll(thing, `${DPV}hasDataCategory`)[0] || `${DPV}PersonalData`;
+    const personalDataType = getUrlAll(thing, `${DPV}hasPersonalData`)[0] || `${DPV}Data`;
+    const domain = getStringNoLocaleAll(thing, `${EX}domain`)[0];
+    
+    // Determine sensitivity from DPV category
+    const isSensitive = isSensitiveCategory(dataCategory);
+    
+    return {
+      fieldIri,
+      fieldLabel,
+      isSensitive,
+      dataCategory: cleanIRI(dataCategory),
+      personalDataType: cleanIRI(personalDataType),
+      domain,
+    };
+  } catch (err) {
+    console.error('Error parsing privacy mapping:', err);
+    return null;
+  }
+}
+
+/* ======================================================
 PAGE COMPONENT
 ====================================================== */
 export default function AuditDashboardPage() {
@@ -372,12 +525,13 @@ export default function AuditDashboardPage() {
   const [logs, setLogs] = useState<AccessLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   
-  // Modals
+  const [sotwData, setSotwData] = useState<StateOfTheWorld | null>(null);
+  const [loadingSotw, setLoadingSotw] = useState(false);
+  
   const { isOpen: isPolicyModalOpen, onOpen: onPolicyModalOpen, onClose: onPolicyModalClose } = useDisclosure();
   const { isOpen: isPrivacyModalOpen, onOpen: onPrivacyModalOpen, onClose: onPrivacyModalClose } = useDisclosure();
   const { isOpen: isDetailModalOpen, onOpen: onDetailModalOpen, onClose: onDetailModalClose } = useDisclosure();
 
-  // Data States
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [loadingPolicies, setLoadingPolicies] = useState(false);
   const [editingPolicy, setEditingPolicy] = useState<Policy | null>(null);
@@ -389,22 +543,19 @@ export default function AuditDashboardPage() {
     active: true,
     constraints: [{ type: 'count', operator: 'lteq', value: 1 }],
   });
+  
   const [privacyMappings, setPrivacyMappings] = useState<PrivacyMapping[]>([]);
   const [loadingPrivacy, setLoadingPrivacy] = useState(false);
   const [availableFields, setAvailableFields] = useState<string[]>([]);
   
-  // Filter States
   const [search, setSearch] = useState('');
   const [sensitivity, setSensitivity] = useState<'all' | 'sensitive' | 'normal'>('all');
   const [dateFilter, setDateFilter] = useState<'all' | 'today' | '7' | '30'>('all');
   const [appFilter, setAppFilter] = useState<string>('all');
   const [decisionFilter, setDecisionFilter] = useState<'all' | 'allowed' | 'violation'>('all');
 
-  // Pagination State
   const [currentPage, setCurrentPage] = useState(1);
   const rowsPerPage = 10;
-
-  // Selected Log for Detail Modal
   const [selectedLog, setSelectedLog] = useState<AccessLogEntry | null>(null);
 
   const stats = useMemo(() => {
@@ -430,14 +581,19 @@ export default function AuditDashboardPage() {
         const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
         const accessLogUrl = `${podUrls[0]}${ACCESS_LOG_PATH}`;
         console.log('🔍 Loading access log from:', accessLogUrl);
+        
         const dataset = await getSolidDataset(accessLogUrl, { fetch: session.fetch });
         if (!dataset || typeof dataset !== 'object') {
           setLogs([]);
           setLoading(false);
           return;
         }
+        
         const parsed: AccessLogEntry[] = [];
-        getThingAll(dataset).forEach((thing) => {
+        const allThings = getThingAll(dataset);
+        console.log(`📦 Total things in dataset: ${allThings.length}`);
+        
+        allThings.forEach((thing) => {
           try {
             const entry = parseAccessLogEntry(thing, dataset);
             if (entry) {
@@ -447,7 +603,25 @@ export default function AuditDashboardPage() {
             console.warn('Failed to parse individual entry:', parseErr);
           }
         });
+        
         console.log(`📊 Total parsed entries: ${parsed.length}`);
+        console.log(`📊 Entries with violations: ${parsed.filter(l => l.violations.length > 0).length}`);
+        
+        parsed.forEach(log => {
+          if (log.violations.length > 0) {
+            console.log('⚠️ Violation found:', {
+              accessId: log.accessId,
+              app: log.app,
+              violations: log.violations.map(v => ({
+                field: v.violatedField,
+                count: v.observedCount,
+                limit: v.allowedLimit,
+                policy: v.violatedPolicy
+              }))
+            });
+          }
+        });
+        
         parsed.sort((a, b) => {
           if (!a.startedAt) return 1;
           if (!b.startedAt) return -1;
@@ -477,6 +651,72 @@ export default function AuditDashboardPage() {
   }, [session, toast]);
 
   /* =========================
+  LOAD STATE OF THE WORLD
+  ========================= */
+  const loadStateOfTheWorld = async () => {
+    if (!session?.info?.webId) return;
+    setLoadingSotw(true);
+    try {
+      const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
+      const sotwUrl = `${podUrls[0]}${STATE_OF_WORLD_PATH}`;
+      console.log('🌍 Loading State of the World from:', sotwUrl);
+      
+      const dataset = await getSolidDataset(sotwUrl, { fetch: session.fetch });
+      if (!dataset) {
+        console.warn('SOTW dataset not found, using empty state');
+        setSotwData(null);
+        return;
+      }
+      
+      let sotwEntry: StateOfTheWorld | null = null;
+      
+      getThingAll(dataset).forEach((thing: any) => {
+        const parsed = parseStateOfTheWorld(thing);
+        if (parsed) {
+          sotwEntry = parsed;
+          console.log('✅ Parsed SOTW:', parsed);
+        }
+      });
+      
+      if (!sotwEntry) {
+        console.log('⚠️ No SOTW entry found in dataset, creating empty state');
+        sotwEntry = {
+          id: `${sotwUrl}#sotw-current`,
+          currentTime: new Date(),
+          currentLocation: 'ID',
+          counts: Object.entries(FIELD_LABELS).map(([iri, label]) => ({
+            targetField: shortIri(cleanIRI(iri)),
+            targetIRI: cleanIRI(iri),
+            countValue: 0,
+          })),
+        };
+      }
+      
+      setSotwData(sotwEntry);
+    } catch (err: any) {
+      console.error('Failed to load State of the World:', err);
+      setSotwData({
+        id: 'fallback',
+        currentTime: new Date(),
+        currentLocation: 'Unknown',
+        counts: Object.entries(FIELD_LABELS).map(([iri, label]) => ({
+          targetField: shortIri(cleanIRI(iri)),
+          targetIRI: cleanIRI(iri),
+          countValue: 0,
+        })),
+      });
+      toast({
+        title: 'Warning',
+        description: 'Could not load State of the World. Showing empty state.',
+        status: 'warning',
+        duration: 3000,
+      });
+    } finally {
+      setLoadingSotw(false);
+    }
+  };
+
+  /* =========================
   LOAD POLICIES
   ========================= */
   const loadPolicies = async () => {
@@ -487,17 +727,21 @@ export default function AuditDashboardPage() {
       const policyUrl = `${podUrls[0]}${POLICY_PATH}`;
       const dataset = await getSolidDataset(policyUrl, { fetch: session.fetch });
       const parsed: Policy[] = [];
+      
       getThingAll(dataset).forEach((thing: any) => {
         const types = getUrlAll(thing, `${RDF}type`);
         if (!types.some((t: string) => t.includes('Policy'))) return;
+        
         const title = getStringNoLocaleAll(thing, `${DCT}title`)[0] || 'Untitled Policy';
         const description = getStringNoLocaleAll(thing, `${DCT}description`)[0] || '';
         const target = cleanIRI(getUrlAll(thing, `${ODRL}target`)[0] || '');
         const active = getBoolean(thing, `${FORCE}policyActive`) ?? true;
         const createdAt = getDatetime(thing, `${DCT}created`) ?? undefined;
+        
         let constraintType: 'count' | 'timeWindow' | 'location' = 'count';
         let constraintValue: string | number = 1;
         let constraintOperator: 'lteq' | 'gteq' | 'eq' = 'lteq';
+        
         const permissions = getUrlAll(thing, `${ODRL}permission`);
         permissions.forEach((permUrl: string) => {
           const permThing = getThingAll(dataset).find((t: any) => t.url === permUrl);
@@ -508,6 +752,7 @@ export default function AuditDashboardPage() {
               if (cThing) {
                 const leftOperand = cleanIRI(getUrlAll(cThing, `${ODRL}leftOperand`)[0] || '');
                 const op = cleanIRI(getUrlAll(cThing, `${ODRL}operator`)[0] || '');
+                
                 if (leftOperand.includes('count')) {
                   constraintType = 'count';
                   constraintValue = getInteger(cThing, `${ODRL}rightOperand`) ?? 0;
@@ -518,6 +763,7 @@ export default function AuditDashboardPage() {
                   constraintType = 'location';
                   constraintValue = getStringNoLocaleAll(cThing, `${ODRL}rightOperand`)[0] || '';
                 }
+                
                 if (op.includes('lteq')) constraintOperator = 'lteq';
                 else if (op.includes('gteq')) constraintOperator = 'gteq';
                 else constraintOperator = 'eq';
@@ -525,7 +771,9 @@ export default function AuditDashboardPage() {
             });
           }
         });
+        
         const constraints: PolicyConstraint[] = [{ type: constraintType, operator: constraintOperator, value: constraintValue }];
+        
         parsed.push({
           id: thing.url,
           title,
@@ -537,6 +785,7 @@ export default function AuditDashboardPage() {
           createdAt,
         });
       });
+      
       setPolicies(parsed);
     } catch (err) {
       console.error('Failed to load policies, using defaults:', err);
@@ -550,7 +799,7 @@ export default function AuditDashboardPage() {
   };
 
   /* =========================
-  LOAD PRIVACY MAPPINGS - FIXED
+  LOAD PRIVACY MAPPINGS - DPV STYLE (FIXED)
   ========================= */
   const loadPrivacyMappings = async () => {
     if (!session?.info?.webId) return;
@@ -558,52 +807,51 @@ export default function AuditDashboardPage() {
     try {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
       const mappingUrl = `${podUrls[0]}${PRIVACY_MAPPING_PATH}`;
+      
       let savedMappings: PrivacyMapping[] = [];
+      
       try {
         const dataset = await getSolidDataset(mappingUrl, { fetch: session.fetch });
         const things = getThingAll(dataset);
         console.log(`🔍 Found ${things.length} things in privacy mapping file.`);
+        
         things.forEach((thing: any) => {
-          let fieldIri = cleanIRI(getUrlAll(thing, `${EX}fieldIri`)[0]);
-          if (!fieldIri) {
-            const possibleIri = cleanIRI(thing.url);
-            if (FIELD_LABELS[possibleIri]) {
-              fieldIri = possibleIri;
-            }
-          }
-          if (fieldIri) {
-            const isSensitive = getBoolean(thing, `${EX}isSensitive`) ?? false;
-            savedMappings.push({
-              fieldIri,
-              fieldLabel: getFieldLabel(fieldIri),
-              isSensitive,
-              dataCategory: getUrlAll(thing, `${EX}dataCategory`)[0] || 'dpv:PersonalData',
-              personalDataType: getUrlAll(thing, `${EX}personalDataType`)[0] || 'dpv:Data',
-            });
+          const parsed = parsePrivacyMapping(thing);
+          if (parsed) {
+            savedMappings.push(parsed);
+            console.log('✅ Parsed mapping:', parsed.fieldLabel, parsed.isSensitive ? '(sensitive)' : '(normal)');
           }
         });
       } catch (e: any) {
-        console.log('Privacy mapping file not found or unreadable. Creating defaults.', e);
+        console.log('Privacy mapping file not found or unreadable. Will create on save.', e);
       }
       
-      // Prioritize saved mappings over defaults
-      const savedMap = new Map(savedMappings.map(m => [m.fieldIri, m]));
+      // Create final mappings: merge saved DPV mappings with FIELD_LABELS definitions
+      const savedMap = new Map(savedMappings.map(m => [cleanIRI(m.fieldIri), m]));
       
       const finalMappings: PrivacyMapping[] = Object.entries(FIELD_LABELS).map(([iri, label]) => {
         const cleanIri = cleanIRI(iri);
         const saved = savedMap.get(cleanIri);
+        
+        if (saved) {
+          // Use saved DPV data
+          return saved;
+        }
+        
+        // Default for fields not in TTL yet
         return {
           fieldIri: cleanIri,
           fieldLabel: label,
-          isSensitive: saved ? saved.isSensitive : false,
-          dataCategory: saved ? saved.dataCategory : 'dpv:PersonalData',
-          personalDataType: saved ? saved.personalDataType : 'dpv:Data',
+          isSensitive: false,
+          dataCategory: `${DPV}PersonalData`,
+          personalDataType: `${DPV}Data`,
+          domain: cleanIri.split('/').pop()?.split('#').pop(),
         };
       });
       
-      // Add any saved mappings that aren't in FIELD_LABELS (dynamic fields)
+      // Add any saved mappings that aren't in FIELD_LABELS (dynamic/custom fields)
       savedMappings.forEach(saved => {
-        if (!finalMappings.find(m => m.fieldIri === saved.fieldIri)) {
+        if (!finalMappings.find(m => cleanIRI(m.fieldIri) === cleanIRI(saved.fieldIri))) {
           finalMappings.push(saved);
         }
       });
@@ -632,6 +880,7 @@ export default function AuditDashboardPage() {
       const policyUrl = `${podUrls[0]}${POLICY_PATH}`;
       let dataset;
       try { dataset = await getSolidDataset(policyUrl, { fetch: session.fetch }); } catch { dataset = createSolidDataset(); }
+      
       let policyThing: ThingPersisted;
       if (policy.id.startsWith('http')) {
         const existingThing = getThingAll(dataset).find((t) => t.url === policy.id);
@@ -639,24 +888,28 @@ export default function AuditDashboardPage() {
       } else {
         policyThing = createThing({ url: `${podUrls[0]}${POLICY_PATH}#${policy.id}` });
       }
+      
       const fullTargetIri = Object.keys(FIELD_LABELS).find(iri => shortIri(cleanIRI(iri)) === policy.targetField) || policy.targetField;
+      
       policyThing = setUrl(policyThing, `${RDF}type`, `${ODRL}Policy`);
       policyThing = setStringNoLocale(policyThing, `${DCT}title`, policy.title);
       policyThing = setStringNoLocale(policyThing, `${DCT}description`, policy.description || '');
       policyThing = setDatetime(policyThing, `${DCT}created`, policy.createdAt || new Date());
       policyThing = setUrl(policyThing, `${ODRL}target`, fullTargetIri);
       policyThing = setBoolean(policyThing, `${FORCE}policyActive`, policy.active);
+      
       const constraint = policy.constraints[0];
       if (constraint) {
         let constraintThing = createThing({ url: `${policyThing.url}#constraint-${Date.now()}` });
         let permissionThing = createThing({ url: `${policyThing.url}#permission-${Date.now()}` });
+        
         if (constraint.type === 'count') {
           constraintThing = setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}count`);
           constraintThing = setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
           constraintThing = setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value));
         }
         else if (constraint.type === 'timeWindow') {
-          constraintThing = setUrl(constraintThing, `${ODRL}leftOperand`, `${EX}timeWindow`);
+          constraintThing = setUrl(constraintThing, `${ODRL}leftOperand`, `${EX_BASE}timeWindow`);
           constraintThing = setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
           constraintThing = setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value));
         }
@@ -665,16 +918,20 @@ export default function AuditDashboardPage() {
           constraintThing = setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
           constraintThing = setStringNoLocale(constraintThing, `${ODRL}rightOperand`, String(constraint.value));
         }
-        permissionThing = setUrl(permissionThing, `${ODRL}assigner`, `${EX}pod-owner`);
-        permissionThing = setUrl(permissionThing, `${ODRL}assignee`, `${EX}any-app`);
+        
+        permissionThing = setUrl(permissionThing, `${ODRL}assigner`, `${EX_BASE}pod-owner`);
+        permissionThing = setUrl(permissionThing, `${ODRL}assignee`, `${EX_BASE}any-app`);
         permissionThing = setUrl(permissionThing, `${ODRL}action`, `${ODRL}read`);
         permissionThing = setUrl(permissionThing, `${ODRL}constraint`, constraintThing.url);
+        
         policyThing = setUrl(policyThing, `${ODRL}permission`, permissionThing.url);
         dataset = setThing(dataset, constraintThing);
         dataset = setThing(dataset, permissionThing);
       }
+      
       dataset = setThing(dataset, policyThing);
       await saveSolidDatasetAt(policyUrl, dataset, { fetch: session.fetch });
+      
       toast({ title: 'Policy saved', description: `${policy.title} has been updated`, status: 'success' });
       await loadPolicies();
     } catch (err) {
@@ -685,34 +942,56 @@ export default function AuditDashboardPage() {
   };
 
   /* =========================
-  SAVE PRIVACY MAPPINGS - FIXED
+  SAVE PRIVACY MAPPINGS - DPV STYLE (FIXED)
   ========================= */
   const savePrivacyMappings = async () => {
     if (!session?.info?.webId) return;
     try {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
       const mappingUrl = `${podUrls[0]}${PRIVACY_MAPPING_PATH}`;
+      
       let dataset = createSolidDataset();
       
-      // Ensure we save the current state exactly as it is
-      privacyMappings.forEach((mapping, idx) => {
-        let thing = createThing({ url: `${mappingUrl}#mapping-${idx}` });
-        thing = setUrl(thing, `${EX}fieldIri`, mapping.fieldIri);
-        thing = setStringNoLocale(thing, `${EX}fieldName`, mapping.fieldLabel);
-        thing = setBoolean(thing, `${EX}isSensitive`, mapping.isSensitive);
-        thing = setUrl(thing, `${EX}dataCategory`, mapping.dataCategory);
-        thing = setUrl(thing, `${EX}personalDataType`, mapping.personalDataType);
+      // Add prefixes as comments (for readability, though Solid doesn't require them)
+      // Note: solid-client doesn't support prefix declarations directly in TTL output,
+      // but we use full IRIs which is standards-compliant
+      
+      privacyMappings.forEach((mapping) => {
+        // Subject: use ex:shortName format for known fields, or full IRI for custom
+        const shortName = schemaToExShort(mapping.fieldIri);
+        const subjectUrl = `${EX}${shortName}`;
+        
+        let thing = createThing({ url: subjectUrl });
+        
+        // Type: dpv:PersonalData
+        thing = setUrl(thing, `${RDF}type`, `${DPV}PersonalData`);
+        
+        // skos:prefLabel
+        thing = setStringNoLocale(thing, `${SKOS}prefLabel`, mapping.fieldLabel);
+        
+        // dpv:hasPersonalData
+        thing = setUrl(thing, `${DPV}hasPersonalData`, mapping.personalDataType);
+        
+        // dpv:hasDataCategory (determines sensitivity)
+        thing = setUrl(thing, `${DPV}hasDataCategory`, mapping.dataCategory);
+        
+        // ex:domain (custom metadata)
+        if (mapping.domain) {
+          thing = setStringNoLocale(thing, `${EX}domain`, mapping.domain);
+        }
+        
         dataset = setThing(dataset, thing);
       });
       
       await saveSolidDatasetAt(mappingUrl, dataset, { fetch: session.fetch });
+      
       toast({
         title: 'Success',
-        description: 'Privacy settings saved successfully.',
+        description: 'Privacy settings saved in DPV format.',
         status: 'success'
       });
       
-      // Reload to ensure consistency with Pod
+      // Reload to ensure consistency
       await loadPrivacyMappings();
       onPrivacyModalClose();
     } catch (err: any) {
@@ -762,9 +1041,10 @@ export default function AuditDashboardPage() {
     });
   }, [logs, search, sensitivity, dateFilter, appFilter, decisionFilter]);
 
-  // Pagination Logic for Violation Report
   const violationLogs = useMemo(() => {
-    return filteredLogs.filter((l) => l.violations.length > 0);
+    const vLogs = filteredLogs.filter((l) => l.violations.length > 0);
+    console.log('🔍 Violation logs after filter:', vLogs.length);
+    return vLogs;
   }, [filteredLogs]);
 
   const totalPages = Math.ceil(violationLogs.length / rowsPerPage);
@@ -784,15 +1064,18 @@ export default function AuditDashboardPage() {
     setNewPolicy({ title: '', description: '', targetField: '', targetIRI: '', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 1 }] });
     onPolicyModalOpen();
   };
+  
   const handleEditPolicy = (policy: Policy) => {
     setEditingPolicy(policy);
     setNewPolicy({ ...policy });
     onPolicyModalOpen();
   };
+  
   const handleTogglePolicyActive = async (policy: Policy) => {
     const updated = { ...policy, active: !policy.active };
     await savePolicy(updated);
   };
+  
   const handleSavePolicy = async () => {
     if (!newPolicy.title || !newPolicy.targetField) {
       toast({ title: 'Missing required fields', description: 'Please fill in policy title and target field', status: 'warning' });
@@ -811,8 +1094,22 @@ export default function AuditDashboardPage() {
     await savePolicy(policyToSave);
     onPolicyModalClose();
   };
+  
   const handleToggleSensitivity = (fieldIri: string, newValue: boolean) => {
-    setPrivacyMappings((prev) => prev.map((m) => (m.fieldIri === fieldIri ? { ...m, isSensitive: newValue } : m)));
+    setPrivacyMappings((prev) => prev.map((m) => {
+      if (cleanIRI(m.fieldIri) === cleanIRI(fieldIri)) {
+        // Update DPV category based on sensitivity toggle
+        const newCategory = newValue 
+          ? `${DPV}SensitivePersonalData` 
+          : `${DPV}PersonalData`;
+        return { 
+          ...m, 
+          isSensitive: newValue,
+          dataCategory: newCategory
+        };
+      }
+      return m;
+    }));
   };
 
   const SchemaVisualization = ({ fields }: { fields: AccessedField[] }) => {
@@ -857,6 +1154,7 @@ export default function AuditDashboardPage() {
         </HStack>
       </Flex>
       <Divider mb={6} />
+      
       {/* STATS CARDS */}
       <SimpleGrid columns={{ base: 2, md: 4 }} spacing={4} mb={6}>
         <Card>
@@ -893,6 +1191,7 @@ export default function AuditDashboardPage() {
           </CardBody>
         </Card>
       </SimpleGrid>
+      
       {/* FILTER BAR */}
       <Card mb={6}>
         <CardBody>
@@ -923,10 +1222,12 @@ export default function AuditDashboardPage() {
           </VStack>
         </CardBody>
       </Card>
+      
       {loading && <Flex justify="center" py={10}><Spinner size="xl" /></Flex>}
       {!loading && filteredLogs.length === 0 && (
         <Alert status="info"><AlertIcon />No audit logs match the selected filters.</Alert>
       )}
+      
       {/* TABS */}
       {!loading && (
         <Tabs variant="enclosed">
@@ -935,7 +1236,7 @@ export default function AuditDashboardPage() {
             <Tab>State of the World</Tab>
           </TabList>
           <TabPanels>
-            {/* TAB 1: VIOLATION REPORT (MOVED TO FRONT) */}
+            {/* TAB 1: VIOLATION REPORT */}
             <TabPanel>
               <Card>
                 <CardHeader><Text fontWeight="bold">Policy Violation Report</Text></CardHeader>
@@ -948,7 +1249,6 @@ export default function AuditDashboardPage() {
                         <Th>Violated Field</Th>
                         <Th>Policy Title</Th>
                         <Th>Policy ID</Th>
-                        {/* Count and Limit removed from main table as requested */}
                       </Tr>
                     </Thead>
                     <Tbody>
@@ -977,11 +1277,10 @@ export default function AuditDashboardPage() {
                         })
                       )}
                       {currentViolationLogs.length === 0 && (
-                        <Tr><Td colSpan={5} textAlign="center">No violations recorded</Td></Tr>
+                        <Tr><Td colSpan={5} textAlign="center">No violations recorded in filtered logs. Try adjusting filters or check if access log contains violations.</Td></Tr>
                       )}
                     </Tbody>
                   </Table>
-                  {/* Pagination Controls */}
                   {totalPages > 1 && (
                     <Flex justify="space-between" align="center" mt={4}>
                       <Button 
@@ -1007,41 +1306,66 @@ export default function AuditDashboardPage() {
               </Card>
             </TabPanel>
 
-            {/* TAB 2: STATE OF THE WORLD (RENAMED FROM SCHEMA OVERVIEW) */}
+            {/* TAB 2: STATE OF THE WORLD */}
             <TabPanel>
               <Card>
-                <CardHeader><Text fontWeight="bold">State of the World</Text></CardHeader>
+                <CardHeader>
+                  <Flex justify="space-between" align="center">
+                    <Text fontWeight="bold">State of the World</Text>
+                    <Button size="sm" colorScheme="blue" onClick={loadStateOfTheWorld} isLoading={loadingSotw}>
+                      Refresh
+                    </Button>
+                  </Flex>
+                </CardHeader>
                 <CardBody>
-                  <VStack align="stretch" spacing={4}>
-                    {['Sensitive', 'Normal'].map((category) => {
-                      const categoryFields = filteredLogs.flatMap((l) => l.fields).filter((f) => (category === 'Sensitive') === f.isSensitive);
-                      const uniqueFields = Array.from(new Map(categoryFields.map((f) => [f.fieldIri, f])).values());
-                      if (uniqueFields.length === 0) return null;
-                      return (
-                        <Box key={category}>
-                          <Text fontWeight="medium" mb={2} color={category === 'Sensitive' ? 'red.600' : 'blue.600'}>
-                            {category} Data Fields ({uniqueFields.length})
-                          </Text>
-                          <SimpleGrid columns={{ base: 1, md: 2 }} spacing={3}>
-                            {uniqueFields.map((field) => (
-                              <Box key={field.fieldIri} p={3} borderRadius="md" borderWidth="1px" borderColor="gray.200">
-                                <Flex justify="space-between" align="start">
-                                  <VStack align="start" spacing={1}>
-                                    <Text fontWeight="medium">{field.fieldName}</Text>
-                                    <Text fontSize="xs" color="gray.600">{shortIri(field.fieldIri)}</Text>
-                                  </VStack>
-                                  <Tag size="sm" colorScheme={field.isSensitive ? 'red' : 'blue'}>{shortIri(field.personalDataType)}</Tag>
-                                </Flex>
-                                <Text fontSize="xs" mt={2} color="gray.700">
-                                  Category: <Code>{shortIri(field.dataCategory)}</Code>
-                                </Text>
-                              </Box>
-                            ))}
-                          </SimpleGrid>
+                  {loadingSotw ? (
+                    <Flex justify="center" py={10}><Spinner /></Flex>
+                  ) : sotwData ? (
+                    <VStack align="stretch" spacing={4}>
+                      <HStack spacing={6} wrap="wrap">
+                        <Box>
+                          <Text fontSize="xs" color="gray.600">Current Time</Text>
+                          <Text fontWeight="medium">{sotwData.currentTime?.toLocaleString() || 'N/A'}</Text>
                         </Box>
-                      );
-                    })}
-                  </VStack>
+                        <Box>
+                          <Text fontSize="xs" color="gray.600">Current Location</Text>
+                          <Tag size="sm" colorScheme="purple">{sotwData.currentLocation}</Tag>
+                        </Box>
+                      </HStack>
+                      
+                      <Divider />
+                      
+                      <Text fontWeight="medium" mb={2}>Access Counts by Field</Text>
+                      <SimpleGrid columns={{ base: 1, md: 2 }} spacing={3}>
+                        {sotwData.counts.map((count) => (
+                          <Box key={count.targetIRI} p={3} borderRadius="md" borderWidth="1px" borderColor="gray.200">
+                            <Flex justify="space-between" align="center">
+                              <VStack align="start" spacing={1}>
+                                <Text fontWeight="medium">{getFieldLabel(count.targetIRI)}</Text>
+                                <Text fontSize="xs" color="gray.600">{shortIri(count.targetIRI)}</Text>
+                              </VStack>
+                              <Stat>
+                                <StatNumber fontSize="2xl">{count.countValue}</StatNumber>
+                                <StatHelpText>accesses</StatHelpText>
+                              </Stat>
+                            </Flex>
+                          </Box>
+                        ))}
+                      </SimpleGrid>
+                      
+                      {sotwData.counts.length === 0 && (
+                        <Alert status="info">
+                          <AlertIcon />
+                          No count data available in State of the World file.
+                        </Alert>
+                      )}
+                    </VStack>
+                  ) : (
+                    <Alert status="warning">
+                      <AlertIcon />
+                      No State of the World data available. Ensure the file exists at <Code>{STATE_OF_WORLD_PATH}</Code>.
+                    </Alert>
+                  )}
                 </CardBody>
               </Card>
             </TabPanel>
@@ -1049,7 +1373,7 @@ export default function AuditDashboardPage() {
         </Tabs>
       )}
 
-      {/* DETAIL MODAL (REPLACES ACCESS LOG TAB CONTENT) */}
+      {/* DETAIL MODAL */}
       <Modal isOpen={isDetailModalOpen} onClose={onDetailModalClose} size="2xl">
         <ModalOverlay />
         <ModalContent>
@@ -1105,7 +1429,6 @@ export default function AuditDashboardPage() {
                         const policyTitle = violatedPolicyObj ? violatedPolicyObj.title : shortIri(v.violatedPolicy);
                         return (
                           <Text key={`${selectedLog.accessId}-violation-${idx}`} fontSize="xs">
-                            {/* Updated Terminology: Constraint & Violated Count */}
                             {getFieldLabel(v.violatedField)}: Violated Count {v.observedCount} &gt; Constraint {v.allowedLimit} ({policyTitle})
                           </Text>
                         );
@@ -1262,16 +1585,17 @@ export default function AuditDashboardPage() {
         </ModalContent>
       </Modal>
 
-      {/* PRIVACY SETTINGS MODAL */}
+      {/* PRIVACY SETTINGS MODAL - DPV STYLE */}
       <Modal isOpen={isPrivacyModalOpen} onClose={onPrivacyModalClose} size="2xl">
         <ModalOverlay />
         <ModalContent bg="white" color="black">
-          <ModalHeader>Privacy Data Settings</ModalHeader>
+          <ModalHeader>Privacy Data Settings (DPV)</ModalHeader>
           <ModalCloseButton />
           <ModalBody>
             <Alert status="info" mb={4}>
               <AlertIcon />
-              Select which fields contain sensitive personal data. This list is generated from your schema definitions. Stored at <Code>{PRIVACY_MAPPING_PATH}</Code>.
+              Fields marked as sensitive use DPV categories like <Code>dpv:SensitivePersonalData</Code>. 
+              Data stored at <Code>{PRIVACY_MAPPING_PATH}</Code> using DPV ontology.
             </Alert>
             {loadingPrivacy ? <Spinner /> : (
               <VStack spacing={3} align="stretch" maxH="60vh" overflowY="auto" p={2}>
@@ -1291,7 +1615,10 @@ export default function AuditDashboardPage() {
                         <Text fontWeight="medium">{mapping.fieldLabel}</Text>
                         {mapping.isSensitive && <Badge colorScheme="red" variant="subtle" fontSize="xs">Sensitive</Badge>}
                       </HStack>
-                      <Text fontSize="xs" color="gray.500" wordBreak="break-all">{mapping.fieldIri}</Text>
+                      <Text fontSize="xs" color="gray.500" wordBreak="break-all">{shortIri(mapping.fieldIri)}</Text>
+                      <Text fontSize="xs" color="gray.400">
+                        Category: {shortIri(mapping.dataCategory)}
+                      </Text>
                     </VStack>
                     <Checkbox
                       isChecked={mapping.isSensitive}
