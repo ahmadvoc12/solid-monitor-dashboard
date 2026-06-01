@@ -72,7 +72,7 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   RepeatIcon,
-  CloseIcon, // ✅ FIX: Import CloseIcon dari @chakra-ui/icons
+  CloseIcon,
 } from '@chakra-ui/icons';
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
@@ -147,14 +147,15 @@ const SENSITIVE_CATEGORIES = [
 ];
 
 /* ======================================================
-ACTION HIERARCHY - ODRL COMPLIANT
+ACTION HIERARCHY - ODRL COMPLIANT ✅ FIXED TYPE
 ====================================================== */
-const ACTION_HIERARCHY: Record<string, string> = {
+// ✅ FIX: Use string | null to allow null values for top-level actions
+const ACTION_HIERARCHY: Record<string, string | null> = {
   [`${EX}read`]: `${ODRL}use`,
   [`${EX}create`]: `${ODRL}use`,
   [`${EX}update`]: `${ODRL}use`,
-  [`${ODRL}use`]: null,
-  [`${ODRL}transfer`]: null,
+  [`${ODRL}use`]: null,        // ✅ Top-level: no parent
+  [`${ODRL}transfer`]: null,   // ✅ Top-level: no parent
 };
 
 function actionIncludedIn(actionA: string, actionB: string): boolean {
@@ -162,7 +163,7 @@ function actionIncludedIn(actionA: string, actionB: string): boolean {
   const target = cleanIRI(actionB);
   if (current === target) return true;
   while (current && ACTION_HIERARCHY[current]) {
-    const parent = cleanIRI(ACTION_HIERARCHY[current]);
+    const parent = cleanIRI(ACTION_HIERARCHY[current]!);
     if (parent === target) return true;
     current = parent;
   }
@@ -1611,7 +1612,7 @@ export default function AuditDashboardPage() {
         </ModalContent>
       </Modal>
 
-      {/* POLICY SETTINGS MODAL - FIXED: Use CloseIcon instead of TagCloseIcon */}
+      {/* POLICY SETTINGS MODAL */}
       <Modal isOpen={isPolicyModalOpen} onClose={onPolicyModalClose} size="4xl">
         <ModalOverlay />
         <ModalContent bg="white" color="gray.800">
@@ -1645,7 +1646,7 @@ export default function AuditDashboardPage() {
                       {editingPolicy && <FormHelperText>Target field cannot be changed for existing policies</FormHelperText>}
                     </FormControl>
                     
-                    {/* ✅ FIXED: Multi-Action Selection with CloseIcon */}
+                    {/* ✅ Multi-Action Selection */}
                     <FormControl>
                       <FormLabel>Allowed Actions</FormLabel>
                       <HStack spacing={2} wrap="wrap">
@@ -1669,7 +1670,7 @@ export default function AuditDashboardPage() {
                               }}
                             >
                               {action}
-                              {isSelected && <CloseIcon ml={1} boxSize="0.6rem" />} {/* ✅ FIX: Use CloseIcon */}
+                              {isSelected && <CloseIcon ml={1} boxSize="0.6rem" />}
                             </Tag>
                           );
                         })}
