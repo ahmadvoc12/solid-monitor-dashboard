@@ -61,6 +61,7 @@ import {
   Link,
   Code,
   Checkbox,
+  TagCloseIcon,
 } from '@chakra-ui/react';
 import {
   EditIcon,
@@ -126,14 +127,14 @@ const STATE_OF_WORLD_PATH = 'private/audit/monitoring/state-of-the-world.ttl';
 FIELD LABEL MAPPING
 ====================================================== */
 const FIELD_LABELS: Record<string, string> = {
-  'https://schema.org/bloodType': 'Blood Type',
-  'https://schema.org/identifier': 'Identifier',
+  'https://schema.org/identifier': 'Identifier Number Person',
   'http://purl.org/dc/terms/created': 'Created Timestamp',
   'https://schema.org/email': 'Email',
   'https://schema.org/name': 'Name',
-  'https://schema.org/age': 'Age',
-  'https://schema.org/gender': 'Gender',
-  'https://schema.org/hairColor': 'Hair Colour',
+  'https://schema.org/birthDate': 'Birth Date',
+  'https://schema.org/birthPlace': 'birth Place',
+  'https://schema.org/parent': 'Parent',
+  'https://schema.org/bloodType': 'Blood Type',
 };
 
 /* ======================================================
@@ -144,6 +145,61 @@ const SENSITIVE_CATEGORIES = [
   `${DPV}SpecialCategoryPersonalData`,
   `${DPV}IdentifyingPersonalData`,
 ];
+
+/* ======================================================
+ACTION HIERARCHY - ODRL COMPLIANT
+====================================================== */
+// ✅ Action hierarchy: all actions are includedIn 'use' (top-level ODRL action)
+const ACTION_HIERARCHY: Record<string, string> = {
+  [`${EX}read`]: `${ODRL}use`,
+  [`${EX}create`]: `${ODRL}use`,
+  [`${EX}update`]: `${ODRL}use`,
+  // Top-level actions (no parent)
+  [`${ODRL}use`]: null,
+  [`${ODRL}transfer`]: null,
+};
+
+// ✅ Helper: Check if actionA is included in actionB (transitive)
+function actionIncludedIn(actionA: string, actionB: string): boolean {
+  let current = cleanIRI(actionA);
+  const target = cleanIRI(actionB);
+  
+  // Direct match
+  if (current === target) return true;
+  
+  // Traverse hierarchy
+  while (current && ACTION_HIERARCHY[current]) {
+    const parent = cleanIRI(ACTION_HIERARCHY[current]);
+    if (parent === target) return true;
+    current = parent;
+  }
+  return false;
+}
+
+// ✅ Helper: Check if requested action is allowed by policy actions
+function isActionAllowed(
+  requestedAction: string,
+  policyActions: string[],
+  policyProhibitions?: string[]
+): { allowed: boolean; reason?: string } {
+  
+  // 1. Check prohibition first (higher priority)
+  if (policyProhibitions?.some(prohibited => 
+    actionIncludedIn(requestedAction, prohibited)
+  )) {
+    return { allowed: false, reason: 'Action prohibited by policy' };
+  }
+  
+  // 2. Check permission with hierarchy
+  const isPermitted = policyActions.some(policyAction =>
+    actionIncludedIn(requestedAction, policyAction)
+  );
+  
+  return {
+    allowed: isPermitted,
+    reason: isPermitted ? undefined : 'Action not permitted'
+  };
+}
 
 /* ======================================================
 UTILS
@@ -285,7 +341,7 @@ type AccessLogEntry = {
   startedAt: Date | null;
   app: string;
   decision: 'ALLOWED' | 'VIOLATION';
-  accessMethod: string;
+  accessMethod: string; // ✅ Now can be: 'read' | 'create' | 'update'
   accessedResource: string;
   fields: AccessedField[];
   policyEvaluations: PolicyEvaluation[];
@@ -294,14 +350,18 @@ type AccessLogEntry = {
   violatedPolicies: string[];
 };
 
+// ✅ UPDATED: Constraint with action-specific applicability
 type PolicyConstraint = {
-  type: 'count' | 'timeWindow' | 'location';
-  operator: 'lteq' | 'gteq' | 'eq';
-  value: string | number;
-  unit?: 'hours' | 'days' | 'km';
+  type: 'count' | 'timeWindow' | 'location' | 'dataIntegrity' | 'version';
+  operator: 'lteq' | 'gteq' | 'eq' | 'isAnyOf';
+  value: string | number | Date;
+  unit?: 'hours' | 'days' | 'km' | 'version';
+  
+  // ✅ NEW: Constraint only applies to specific actions
+  applicableActions?: string[]; // ['ex:read', 'ex:update']
 };
 
-// ✅ identifier auto-generated, not user-input
+// ✅ UPDATED: Policy with multi-action support (single assignee)
 type Policy = {
   id: string;
   identifier?: string;
@@ -310,8 +370,16 @@ type Policy = {
   targetField: string;
   targetIRI?: string;
   active: boolean;
+  
+  // ✅ NEW: Support multiple actions (still single assignee)
+  actions: string[]; // ['ex:read', 'ex:create', 'ex:update']
+  
   constraints: PolicyConstraint[];
   createdAt?: Date;
+  
+  // ✅ Single assignee (unchanged)
+  assignee?: string;
+  assigner?: string;
 };
 
 type PrivacyMapping = {
@@ -327,6 +395,8 @@ type SotwCount = {
   targetField: string;
   targetIRI: string;
   countValue: number;
+  // ✅ NEW: Track count per action type
+  actionType?: string; // 'read' | 'create' | 'update'
 };
 
 type StateOfTheWorld = {
@@ -350,7 +420,12 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
     const accessId = thing.url.split('#').pop() ?? thing.url;
     const startedAt = getDatetime(thing, `${PROV}startedAtTime`) ?? null;
     const app = extractAppFromThing(thing);
-    const accessMethod = getStringNoLocaleAll(thing, `${FORCE}accessMethod`)[0] ?? 'GET';
+    
+    // ✅ Extract access method (now supports read/create/update)
+    const accessMethod = getStringNoLocaleAll(thing, `${FORCE}accessMethod`)[0] 
+      ?? getStringNoLocaleAll(thing, `${ODRL}action`)[0]
+      ?? 'read'; // default fallback
+    
     const accessedResource = cleanIRI(getUrlAll(thing, `${FORCE}accessedResource`)[0] ?? '');
     
     const fields: AccessedField[] = [];
@@ -428,7 +503,7 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
       startedAt,
       app,
       decision: decision as 'ALLOWED' | 'VIOLATION',
-      accessMethod,
+      accessMethod: cleanIRI(accessMethod), // ✅ Now supports multi-action
       accessedResource,
       fields,
       policyEvaluations,
@@ -467,12 +542,15 @@ function parseStateOfTheWorld(thing: any, dataset: SolidDataset): StateOfTheWorl
       if (countThing) {
         const target = cleanIRI(getUrlAll(countThing, `${ODRL}target`)[0] ?? '');
         const countValue = getInteger(countThing, `${SOTW}countValue`) ?? 0;
+        // ✅ Optional: extract action type if present
+        const actionType = getStringNoLocaleAll(countThing, `${ODRL}action`)[0];
         
         if (target) {
           const newCount: SotwCount = {
             targetField: shortIri(target),
             targetIRI: target,
             countValue,
+            actionType: actionType ? cleanIRI(actionType) : undefined,
           };
           const existing = countsByTarget.get(target);
           if (!existing || countValue > existing.countValue) {
@@ -555,12 +633,15 @@ export default function AuditDashboardPage() {
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [loadingPolicies, setLoadingPolicies] = useState(false);
   const [editingPolicy, setEditingPolicy] = useState<Policy | null>(null);
+  
+  // ✅ UPDATED: newPolicy with actions array
   const [newPolicy, setNewPolicy] = useState<Partial<Policy>>({
     title: '',
     description: '',
     targetField: '',
     targetIRI: '',
     active: true,
+    actions: ['ex:read'], // ✅ Default to read, can add create/update
     constraints: [{ type: 'count', operator: 'lteq', value: 1 }],
   });
   
@@ -715,19 +796,31 @@ export default function AuditDashboardPage() {
         
         const title = getStringNoLocaleAll(thing, `${DCT}title`)[0] || 'Untitled Policy';
         const description = getStringNoLocaleAll(thing, `${DCT}description`)[0] || '';
-        
-        // ✅ Extract dct:identifier for matching
         const identifier = getStringNoLocaleAll(thing, `${DCT}identifier`)[0];
-        
         const target = cleanIRI(getUrlAll(thing, `${ODRL}target`)[0] || '');
         const active = getBoolean(thing, `${FORCE}policyActive`) ?? true;
         const createdAt = getDatetime(thing, `${DCT}created`) ?? undefined;
+        
+        // ✅ Extract actions from permissions
+        const actions: string[] = [];
+        const permissions = getUrlAll(thing, `${ODRL}permission`);
+        permissions.forEach((permUrl: string) => {
+          const permThing = getThingAll(dataset).find((t: any) => t.url === permUrl);
+          if (permThing) {
+            const action = getUrlAll(permThing, `${ODRL}action`)[0];
+            if (action && !actions.includes(cleanIRI(action))) {
+              actions.push(cleanIRI(action));
+            }
+          }
+        });
+        
+        // Default to read if no actions found (backward compatibility)
+        if (actions.length === 0) actions.push(`${EX}read`);
         
         let constraintType: 'count' | 'timeWindow' | 'location' = 'count';
         let constraintValue: string | number = 1;
         let constraintOperator: 'lteq' | 'gteq' | 'eq' = 'lteq';
         
-        const permissions = getUrlAll(thing, `${ODRL}permission`);
         permissions.forEach((permUrl: string) => {
           const permThing = getThingAll(dataset).find((t: any) => t.url === permUrl);
           if (permThing) {
@@ -756,17 +849,39 @@ export default function AuditDashboardPage() {
           targetField: shortIri(target),
           targetIRI: target,
           active,
+          actions, // ✅ Multi-action support
           constraints: [{ type: constraintType, operator: constraintOperator, value: constraintValue }],
           createdAt,
         });
       });
       setPolicies(parsed);
-      console.log('✅ Loaded policies:', parsed.map(p => ({ title: p.title, identifier: p.identifier, targetIRI: p.targetIRI })));
+      console.log('✅ Loaded policies:', parsed.map(p => ({ title: p.title, identifier: p.identifier, actions: p.actions })));
     } catch (err) {
       console.error('Failed to load policies:', err);
+      // ✅ Fallback policies with multi-action support
       setPolicies([
-        { id: 'default-bloodtype', identifier: generatePolicyIdentifier(), title: 'Blood Type Access Limit', description: 'Limit bloodType access to 1 per session', targetField: 'bloodType', targetIRI: 'https://schema.org/bloodType', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 1 }] },
-        { id: 'default-identity', identifier: generatePolicyIdentifier(), title: 'Identity Access Limit', description: 'Limit identifier access to 3 per session', targetField: 'identifier', targetIRI: 'https://schema.org/identifier', active: true, constraints: [{ type: 'count', operator: 'lteq', value: 3 }] },
+        { 
+          id: 'default-bloodtype', 
+          identifier: generatePolicyIdentifier(), 
+          title: 'Blood Type Access Limit', 
+          description: 'Limit bloodType access to 1 per session', 
+          targetField: 'bloodType', 
+          targetIRI: 'https://schema.org/bloodType', 
+          active: true, 
+          actions: ['ex:read'], // ✅ Default single action
+          constraints: [{ type: 'count', operator: 'lteq', value: 1 }] 
+        },
+        { 
+          id: 'default-identity', 
+          identifier: generatePolicyIdentifier(), 
+          title: 'Identity Access Limit', 
+          description: 'Limit identifier access to 3 per session', 
+          targetField: 'identifier', 
+          targetIRI: 'https://schema.org/identifier', 
+          active: true, 
+          actions: ['ex:read', 'ex:update'], // ✅ Example multi-action
+          constraints: [{ type: 'count', operator: 'lteq', value: 3 }] 
+        },
       ]);
     } finally {
       setLoadingPolicies(false);
@@ -831,7 +946,7 @@ export default function AuditDashboardPage() {
 
   useEffect(() => { loadPrivacyMappings(); }, [session]);
 
-  /* ========================= SAVE POLICY - FIXED ========================= */
+  /* ========================= SAVE POLICY - UPDATED FOR MULTI-ACTION ========================= */
   const savePolicy = async (policy: Policy) => {
     if (!session?.info?.webId) return;
     try {
@@ -871,45 +986,60 @@ export default function AuditDashboardPage() {
       policyThing = setUrl(policyThing, `${ODRL}target`, fullTargetIri);
       policyThing = setBoolean(policyThing, `${FORCE}policyActive`, policy.active);
       
+      // ✅ Handle multiple actions with constraints
       const constraint = policy.constraints[0];
-      if (constraint) {
+      if (constraint && policy.actions?.length > 0) {
         // ✅ Use blank nodes with format _:b752_n3-x
         const blankPrefix = `b752_n3-${Date.now().toString(36).slice(-4)}-${Math.random().toString(36).slice(2, 4)}`;
-        const constraintBlankId = `_:${blankPrefix}-constraint`;
-        const permissionBlankId = `_:${blankPrefix}-permission`;
+        
+        // Create permission for EACH action
+        policy.actions.forEach((action, idx) => {
+          const constraintBlankId = `_:${blankPrefix}-constraint-${idx}`;
+          const permissionBlankId = `_:${blankPrefix}-permission-${idx}`;
+          
+          const constraintThing = createThing({ url: constraintBlankId });
+          const permissionThing = createThing({ url: permissionBlankId });
+          
+          // Set constraint
+          if (constraint.type === 'count') {
+            setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}count`);
+            setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
+            setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value));
+          } else if (constraint.type === 'timeWindow') {
+            setUrl(constraintThing, `${ODRL}leftOperand`, `${EX_BASE}timeWindow`);
+            setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
+            setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value));
+          } else if (constraint.type === 'location') {
+            setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}spatial`);
+            setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
+            setStringNoLocale(constraintThing, `${ODRL}rightOperand`, String(constraint.value));
+          }
+          
+          // ✅ Set action-specific constraint applicability if defined
+          if (constraint.applicableActions?.length > 0) {
+            constraint.applicableActions.forEach(appAction => {
+              addUrl(constraintThing, `${EX}applicableAction`, appAction);
+            });
+          }
+          
+          // Set permission with action
+          setUrl(permissionThing, `${ODRL}assigner`, `${EX_BASE}pod-owner`);
+          setUrl(permissionThing, `${ODRL}assignee`, `${EX_BASE}any-app`);
+          setUrl(permissionThing, `${ODRL}action`, action); // ✅ Dynamic action
+          setUrl(permissionThing, `${ODRL}constraint`, constraintThing.url);
+          
+          policyThing = addUrl(policyThing, `${ODRL}permission`, permissionThing.url);
+          
+          dataset = setThing(dataset, constraintThing);
+          dataset = setThing(dataset, permissionThing);
+        });
+        
+        // ✅ Keep prohibition for distribute (unchanged)
         const prohibitionBlankId = `_:${blankPrefix}-prohibition`;
-        
-        const constraintThing = createThing({ url: constraintBlankId });
-        const permissionThing = createThing({ url: permissionBlankId });
         const prohibitionThing = createThing({ url: prohibitionBlankId });
-        
-        if (constraint.type === 'count') {
-          setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}count`);
-          setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
-          setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value));
-        } else if (constraint.type === 'timeWindow') {
-          setUrl(constraintThing, `${ODRL}leftOperand`, `${EX_BASE}timeWindow`);
-          setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
-          setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value));
-        } else if (constraint.type === 'location') {
-          setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}spatial`);
-          setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
-          setStringNoLocale(constraintThing, `${ODRL}rightOperand`, String(constraint.value));
-        }
-        
-        setUrl(permissionThing, `${ODRL}assigner`, `${EX_BASE}pod-owner`);
-        setUrl(permissionThing, `${ODRL}assignee`, `${EX_BASE}any-app`);
-        setUrl(permissionThing, `${ODRL}action`, `${ODRL}read`);
-        setUrl(permissionThing, `${ODRL}constraint`, constraintThing.url);
-        
         setUrl(prohibitionThing, `${ODRL}assignee`, `${EX_BASE}any-app`);
         setUrl(prohibitionThing, `${ODRL}action`, `${ODRL}distribute`);
-        
-        policyThing = addUrl(policyThing, `${ODRL}permission`, permissionThing.url);
         policyThing = addUrl(policyThing, `${ODRL}prohibition`, prohibitionThing.url);
-        
-        dataset = setThing(dataset, constraintThing);
-        dataset = setThing(dataset, permissionThing);
         dataset = setThing(dataset, prohibitionThing);
       }
       
@@ -1103,8 +1233,9 @@ export default function AuditDashboardPage() {
       targetField: '', 
       targetIRI: '', 
       active: true, 
+      actions: ['ex:read'], // ✅ Default single action
       constraints: [{ type: 'count', operator: 'lteq', value: 1 }],
-      identifier: undefined, // ✅ Will be auto-generated on save
+      identifier: undefined,
     });
     onPolicyModalOpen();
   };
@@ -1126,12 +1257,13 @@ export default function AuditDashboardPage() {
     }
     const policyToSave: Policy = {
       id: editingPolicy?.id || generatePolicyId(),
-      identifier: editingPolicy?.identifier, // ✅ Preserve existing identifier when editing
+      identifier: editingPolicy?.identifier,
       title: newPolicy.title!,
       description: newPolicy.description || '',
       targetField: newPolicy.targetField!,
       targetIRI: editingPolicy?.targetIRI || newPolicy.targetField,
       active: newPolicy.active ?? true,
+      actions: newPolicy.actions || ['ex:read'], // ✅ Ensure actions array exists
       constraints: newPolicy.constraints || [{ type: 'count', operator: 'lteq', value: 1 }],
       createdAt: editingPolicy?.createdAt || new Date(),
     };
@@ -1475,6 +1607,8 @@ export default function AuditDashboardPage() {
                           <HStack spacing={2}>
                             <Badge colorScheme="red">VIOLATION</Badge>
                             <Badge colorScheme="purple" variant="outline">{policyTitle}</Badge>
+                            {/* ✅ Show action type */}
+                            <Tag size="xs" colorScheme="blue" variant="outline">{shortIri(log.accessMethod)}</Tag>
                           </HStack>
                         </Flex>
                         
@@ -1539,7 +1673,7 @@ export default function AuditDashboardPage() {
         </ModalContent>
       </Modal>
 
-      {/* POLICY SETTINGS MODAL - FIXED: Identifier Auto-Generated */}
+      {/* POLICY SETTINGS MODAL - UPDATED FOR MULTI-ACTION */}
       <Modal isOpen={isPolicyModalOpen} onClose={onPolicyModalClose} size="4xl">
         <ModalOverlay />
         <ModalContent bg="white" color="gray.800">
@@ -1573,6 +1707,39 @@ export default function AuditDashboardPage() {
                       </Select>
                       {editingPolicy && <FormHelperText>Target field cannot be changed for existing policies</FormHelperText>}
                     </FormControl>
+                    
+                    {/* ✅ NEW: Multi-Action Selection */}
+                    <FormControl>
+                      <FormLabel>Allowed Actions</FormLabel>
+                      <HStack spacing={2} wrap="wrap">
+                        {['read', 'create', 'update'].map((action) => {
+                          const actionIri = `ex:${action}`;
+                          const isSelected = newPolicy.actions?.includes(actionIri);
+                          return (
+                            <Tag
+                              key={action}
+                              size="md"
+                              variant={isSelected ? 'solid' : 'outline'}
+                              colorScheme="blue"
+                              cursor="pointer"
+                              onClick={() => {
+                                setNewPolicy((p) => ({
+                                  ...p,
+                                  actions: isSelected
+                                    ? p.actions?.filter(a => a !== actionIri) || []
+                                    : [...(p.actions || []), actionIri]
+                                }));
+                              }}
+                            >
+                              {action}
+                              {isSelected && <TagCloseIcon ml={1} />}
+                            </Tag>
+                          );
+                        })}
+                      </HStack>
+                      <FormHelperText>Select one or more actions this policy allows (read/create/update)</FormHelperText>
+                    </FormControl>
+                    
                     <Box>
                       <Text fontWeight="bold" mb={2}>Constraints</Text>
                       <VStack spacing={3} align="stretch">
@@ -1606,13 +1773,21 @@ export default function AuditDashboardPage() {
               <Text fontWeight="bold" mb={3}>Existing Policies</Text>
               {loadingPolicies ? <Spinner /> : (
                 <Table variant="simple" size="sm">
-                  <Thead><Tr><Th>Policy</Th><Th>Identifier</Th><Th>Target</Th><Th>Constraints</Th><Th>Status</Th><Th>Actions</Th></Tr></Thead>
+                  <Thead><Tr><Th>Policy</Th><Th>Identifier</Th><Th>Target</Th><Th>Actions</Th><Th>Constraints</Th><Th>Status</Th><Th>Actions</Th></Tr></Thead>
                   <Tbody>
                     {policies.map((policy) => (
                       <Tr key={policy.id}>
                         <Td><Text fontWeight="medium">{policy.title}</Text><Text fontSize="xs" color="gray.600">{policy.description}</Text></Td>
                         <Td>{policy.identifier ? <Code fontSize="xs">{policy.identifier}</Code> : <Text fontSize="xs" color="gray.400">N/A</Text>}</Td>
                         <Td><Tag size="sm" colorScheme="purple">{policy.targetField}</Tag></Td>
+                        {/* ✅ Show actions */}
+                        <Td>
+                          <HStack spacing={1}>
+                            {policy.actions?.map(action => (
+                              <Tag key={action} size="xs" colorScheme="blue" variant="subtle">{shortIri(action)}</Tag>
+                            ))}
+                          </HStack>
+                        </Td>
                         <Td>{policy.constraints.map((c, idx) => <Text key={`${policy.id}-c-${idx}`} fontSize="xs">{c.type === 'count' ? `Count ${c.operator} ${c.value}` : c.type === 'timeWindow' ? `Time ${c.operator} ${c.value}` : `Location ${c.operator} ${c.value}`}</Text>)}</Td>
                         <Td><Switch size="sm" isChecked={policy.active} onChange={() => handleTogglePolicyActive(policy)} /></Td>
                         <Td><HStack spacing={2}><IconButton size="sm" icon={<EditIcon />} aria-label="Edit" onClick={() => handleEditPolicy(policy)} /><IconButton size="sm" icon={<DeleteIcon />} aria-label="Delete" colorScheme="red" variant="ghost" onClick={() => toast({ title: 'Delete not implemented', status: 'info' })} /></HStack></Td>
