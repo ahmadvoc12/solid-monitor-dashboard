@@ -72,7 +72,7 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   RepeatIcon,
-  CloseIcon, // ✅ FIX: Import CloseIcon dari @chakra-ui/icons
+  CloseIcon,
 } from '@chakra-ui/icons';
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
@@ -114,13 +114,14 @@ const PROV = 'http://www.w3.org/ns/prov#';
 const RDF = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
 const SKOS = 'http://www.w3.org/2004/02/skos/core#';
 const SOTW = 'https://w3id.org/force/sotw#';
+const SCHEMA = 'https://schema.org/';
 
 /* ======================================================
 PATHS
 ====================================================== */
 const ACCESS_LOG_PATH = 'private/audit/access/access-log.ttl';
 const POLICY_PATH = 'private/audit/access/monitor-policy.ttl';
-const PRIVACY_MAPPING_PATH = 'private/dpv-mapping.ttl';
+const PRIVACY_MAPPING_PATH = 'private/dpv-mapping.jsonld'; // ✅ FIX: Use .jsonld extension
 const STATE_OF_WORLD_PATH = 'private/audit/monitoring/state-of-the-world.ttl';
 
 /* ======================================================
@@ -149,7 +150,6 @@ const SENSITIVE_CATEGORIES = [
 /* ======================================================
 ACTION HIERARCHY - ODRL COMPLIANT
 ====================================================== */
-// ✅ FIX: Use string | null to allow null values for top-level actions
 const ACTION_HIERARCHY: Record<string, string | null> = {
   [`${EX}read`]: `${ODRL}use`,
   [`${EX}create`]: `${ODRL}use`,
@@ -862,6 +862,7 @@ export default function AuditDashboardPage() {
     setLoadingPrivacy(true);
     try {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
+      // ✅ FIX: Try .jsonld first, fallback to .ttl for backward compatibility
       const mappingUrl = `${podUrls[0]}${PRIVACY_MAPPING_PATH}`;
       
       let savedMappings: PrivacyMapping[] = [];
@@ -874,8 +875,23 @@ export default function AuditDashboardPage() {
           const parsed = parsePrivacyMapping(thing);
           if (parsed) savedMappings.push(parsed);
         });
-      } catch (e) {
-        console.log('Privacy mapping file not found. Will create on save.');
+      } catch (e: any) {
+        // ✅ Fallback to .ttl if .jsonld not found
+        if (e?.status === 404 || e?.statusCode === 404) {
+          const fallbackUrl = mappingUrl.replace('.jsonld', '.ttl');
+          try {
+            const dataset = await getSolidDataset(fallbackUrl, { fetch: session.fetch });
+            const things = getThingAll(dataset);
+            things.forEach((thing: any) => {
+              const parsed = parsePrivacyMapping(thing);
+              if (parsed) savedMappings.push(parsed);
+            });
+          } catch {
+            console.log('Privacy mapping file not found. Will create on save.');
+          }
+        } else {
+          console.log('Privacy mapping file not found or parse error. Will create on save.');
+        }
       }
       
       const savedMap = new Map(savedMappings.map(m => [cleanIRI(m.fieldIri), m]));
@@ -978,10 +994,10 @@ export default function AuditDashboardPage() {
             setStringNoLocale(constraintThing, `${ODRL}rightOperand`, String(constraint.value));
           }
           
-          // ✅ FIX: Use nullish coalescing to handle optional applicableActions
-          if ((constraint.applicableActions?.length ?? 0) > 0) {
-            constraint.applicableActions!.forEach(appAction => {
-              addUrl(constraintThing, `${EX}applicableAction`, appAction);
+          // ✅ FIX: Safe check for applicableActions with explicit null check
+          if (constraint.applicableActions && constraint.applicableActions.length > 0) {
+            constraint.applicableActions.forEach(appAction => {
+              addUrl(constraintThing, `${EX}applicableAction`, cleanIRI(appAction));
             });
           }
           
@@ -1034,6 +1050,7 @@ export default function AuditDashboardPage() {
     if (!session?.info?.webId) return;
     try {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
+      // ✅ FIX: Use .jsonld extension to avoid Turtle prefix issues
       const mappingUrl = `${podUrls[0]}${PRIVACY_MAPPING_PATH}`;
       
       // ✅ FIX: Properly handle file not found with explicit type
@@ -1049,7 +1066,7 @@ export default function AuditDashboardPage() {
         }
       }
       
-      // ✅ FIX: Process each mapping with proper type safety
+      // ✅ FIX: Process each mapping with proper type safety and FULL IRIs
       privacyMappings.forEach((mapping) => {
         const shortName = schemaToExShort(mapping.fieldIri);
         const subjectUrl = `${EX}${shortName}`;
@@ -1063,13 +1080,13 @@ export default function AuditDashboardPage() {
           thing = createThing({ url: subjectUrl });
         }
         
-        // ✅ Set required DPV predicates with proper types
+        // ✅ Set required DPV predicates with FULL IRIs (no prefix abbreviation)
         thing = setUrl(thing, `${RDF}type`, `${DPV}PersonalData`);
         thing = setStringNoLocale(thing, `${SKOS}prefLabel`, mapping.fieldLabel);
         thing = setUrl(thing, `${DPV}hasPersonalData`, cleanIRI(mapping.personalDataType));
         thing = setUrl(thing, `${DPV}hasDataCategory`, cleanIRI(mapping.dataCategory));
         
-        // Optional domain field
+        // Optional domain field - use full IRI
         if (mapping.domain) {
           thing = setStringNoLocale(thing, `${EX}domain`, mapping.domain);
         }
@@ -1077,8 +1094,11 @@ export default function AuditDashboardPage() {
         dataset = setThing(dataset, thing);
       });
       
-      // ✅ Save with proper error handling
-      await saveSolidDatasetAt(mappingUrl, dataset, { fetch: session.fetch });
+      // ✅ FIX: Save with JSON-LD content type to avoid Turtle prefix issues
+      await saveSolidDatasetAt(mappingUrl, dataset, { 
+        fetch: session.fetch,
+        contentType: 'application/ld+json'  // ✅ Use JSON-LD instead of Turtle
+      });
       
       toast({ title: 'Success', description: 'Privacy settings saved', status: 'success' });
       await loadPrivacyMappings();
@@ -1093,6 +1113,8 @@ export default function AuditDashboardPage() {
         errorMessage = 'Permission Denied. Please check ACL settings for the privacy mapping file.';
       } else if (err?.statusCode === 404 || err?.status === 404) {
         errorMessage = 'Container not found. Please ensure the private/ folder exists.';
+      } else if (err?.message?.includes('Undefined prefix')) {
+        errorMessage = 'Turtle prefix error. Using JSON-LD format to avoid prefix issues.';
       } else if (err?.message) {
         errorMessage = err.message;
       }
@@ -1265,7 +1287,7 @@ export default function AuditDashboardPage() {
   const handleToggleSensitivity = (fieldIri: string, newValue: boolean) => {
     setPrivacyMappings((prev) => prev.map((m) => {
       if (cleanIRI(m.fieldIri) === cleanIRI(fieldIri)) {
-        // ✅ FIX: Properly set DPV category based on sensitivity
+        // ✅ FIX: Properly set DPV category based on sensitivity with cleanIRI
         const newCategory = newValue 
           ? `${DPV}SensitivePersonalData` 
           : `${DPV}PersonalData`;
@@ -1489,7 +1511,7 @@ export default function AuditDashboardPage() {
       {/* MODAL HISTORY / DETAIL */}
       <Modal isOpen={isDetailModalOpen} onClose={onDetailModalClose} size="4xl">
         <ModalOverlay />
-        <ModalContent bg="white" color="gray.800"> {/* ✅ FIX: Added bg="white" */}
+        <ModalContent bg="white" color="gray.800">
           <ModalHeader borderBottom="1px solid" borderColor="gray.200">
             Violation History: {selectedAppHistory?.appName}
           </ModalHeader>
@@ -1666,7 +1688,7 @@ export default function AuditDashboardPage() {
       {/* POLICY SETTINGS MODAL */}
       <Modal isOpen={isPolicyModalOpen} onClose={onPolicyModalClose} size="4xl">
         <ModalOverlay />
-        <ModalContent bg="white" color="gray.800"> {/* ✅ FIX: Added bg="white" */}
+        <ModalContent bg="white" color="gray.800">
           <ModalHeader borderBottom="1px solid" borderColor="gray.200">Policy Management</ModalHeader>
           <ModalCloseButton />
           <ModalBody>
@@ -1721,7 +1743,7 @@ export default function AuditDashboardPage() {
                               }}
                             >
                               {action}
-                              {isSelected && <CloseIcon ml={1} boxSize="0.6rem" />} {/* ✅ FIX: Use CloseIcon */}
+                              {isSelected && <CloseIcon ml={1} boxSize="0.6rem" />}
                             </Tag>
                           );
                         })}
@@ -1795,7 +1817,7 @@ export default function AuditDashboardPage() {
       {/* PRIVACY SETTINGS MODAL */}
       <Modal isOpen={isPrivacyModalOpen} onClose={onPrivacyModalClose} size="2xl">
         <ModalOverlay />
-        <ModalContent bg="white" color="gray.800"> {/* ✅ FIX: Added bg="white" */}
+        <ModalContent bg="white" color="gray.800">
           <ModalHeader borderBottom="1px solid" borderColor="gray.200">Privacy Data Settings (DPV)</ModalHeader>
           <ModalCloseButton />
           <ModalBody>
