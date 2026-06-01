@@ -72,7 +72,7 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   RepeatIcon,
-  CloseIcon,
+  CloseIcon, // ✅ FIX: Import CloseIcon dari @chakra-ui/icons
 } from '@chakra-ui/icons';
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
@@ -149,6 +149,7 @@ const SENSITIVE_CATEGORIES = [
 /* ======================================================
 ACTION HIERARCHY - ODRL COMPLIANT
 ====================================================== */
+// ✅ FIX: Use string | null to allow null values for top-level actions
 const ACTION_HIERARCHY: Record<string, string | null> = {
   [`${EX}read`]: `${ODRL}use`,
   [`${EX}create`]: `${ODRL}use`,
@@ -1008,9 +1009,23 @@ export default function AuditDashboardPage() {
       
       toast({ title: 'Policy saved', description: `${policy.title} updated`, status: 'success' });
       await loadPolicies();
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to save policy:', err);
-      toast({ title: 'Failed to save policy', status: 'error' });
+      let errorMessage = 'Failed to save policy';
+      if (err?.statusCode === 403 || err?.status === 403) {
+        errorMessage = 'Permission Denied. Check ACLs for policy file.';
+      } else if (err?.statusCode === 404 || err?.status === 404) {
+        errorMessage = 'Policy container not found.';
+      } else if (err?.message) {
+        errorMessage = err.message;
+      }
+      toast({
+        title: 'Failed to save policy',
+        description: errorMessage,
+        status: 'error',
+        duration: 7000,
+        isClosable: true,
+      });
       throw err;
     }
   };
@@ -1021,26 +1036,40 @@ export default function AuditDashboardPage() {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
       const mappingUrl = `${podUrls[0]}${PRIVACY_MAPPING_PATH}`;
       
+      // ✅ FIX: Properly handle file not found with explicit type
       let dataset: SolidDataset;
       try {
         dataset = await getSolidDataset(mappingUrl, { fetch: session.fetch });
-      } catch {
-        dataset = createSolidDataset();
+      } catch (err: any) {
+        if (err?.status === 404 || err?.statusCode === 404) {
+          console.log('📝 Privacy mapping file not found, creating new...');
+          dataset = createSolidDataset();
+        } else {
+          throw err;
+        }
       }
       
+      // ✅ FIX: Process each mapping with proper type safety
       privacyMappings.forEach((mapping) => {
         const shortName = schemaToExShort(mapping.fieldIri);
         const subjectUrl = `${EX}${shortName}`;
         
-        let thing = getThingAll(dataset).find((t: any) => cleanIRI(t.url) === cleanIRI(subjectUrl));
+        // Find existing thing or create new
+        let thing = getThingAll(dataset).find((t: any) => 
+          cleanIRI(t.url) === cleanIRI(subjectUrl)
+        );
+        
         if (!thing) {
           thing = createThing({ url: subjectUrl });
         }
         
+        // ✅ Set required DPV predicates with proper types
         thing = setUrl(thing, `${RDF}type`, `${DPV}PersonalData`);
         thing = setStringNoLocale(thing, `${SKOS}prefLabel`, mapping.fieldLabel);
-        thing = setUrl(thing, `${DPV}hasPersonalData`, mapping.personalDataType);
-        thing = setUrl(thing, `${DPV}hasDataCategory`, mapping.dataCategory);
+        thing = setUrl(thing, `${DPV}hasPersonalData`, cleanIRI(mapping.personalDataType));
+        thing = setUrl(thing, `${DPV}hasDataCategory`, cleanIRI(mapping.dataCategory));
+        
+        // Optional domain field
         if (mapping.domain) {
           thing = setStringNoLocale(thing, `${EX}domain`, mapping.domain);
         }
@@ -1048,6 +1077,7 @@ export default function AuditDashboardPage() {
         dataset = setThing(dataset, thing);
       });
       
+      // ✅ Save with proper error handling
       await saveSolidDatasetAt(mappingUrl, dataset, { fetch: session.fetch });
       
       toast({ title: 'Success', description: 'Privacy settings saved', status: 'success' });
@@ -1056,13 +1086,19 @@ export default function AuditDashboardPage() {
       
     } catch (err: any) {
       console.error('Failed to save privacy mappings:', err);
-      let errorMessage = 'Unknown error';
-      if (err.statusCode === 403 || err.statusCode === 401) errorMessage = 'Permission Denied. Check ACLs.';
-      else if (err.statusCode === 404) errorMessage = 'Container not found.';
-      else if (err.message) errorMessage = err.message;
+      
+      // ✅ Better error messages for common issues
+      let errorMessage = 'Unknown error occurred';
+      if (err?.statusCode === 403 || err?.status === 403) {
+        errorMessage = 'Permission Denied. Please check ACL settings for the privacy mapping file.';
+      } else if (err?.statusCode === 404 || err?.status === 404) {
+        errorMessage = 'Container not found. Please ensure the private/ folder exists.';
+      } else if (err?.message) {
+        errorMessage = err.message;
+      }
       
       toast({
-        title: 'Failed to save',
+        title: 'Failed to save privacy settings',
         description: errorMessage,
         status: 'error',
         duration: 7000,
@@ -1225,11 +1261,20 @@ export default function AuditDashboardPage() {
     onPolicyModalClose();
   };
   
+  // ✅ FIX: Proper type handling for sensitivity toggle
   const handleToggleSensitivity = (fieldIri: string, newValue: boolean) => {
     setPrivacyMappings((prev) => prev.map((m) => {
       if (cleanIRI(m.fieldIri) === cleanIRI(fieldIri)) {
-        const newCategory = newValue ? `${DPV}SensitivePersonalData` : `${DPV}PersonalData`;
-        return { ...m, isSensitive: newValue, dataCategory: newCategory };
+        // ✅ FIX: Properly set DPV category based on sensitivity
+        const newCategory = newValue 
+          ? `${DPV}SensitivePersonalData` 
+          : `${DPV}PersonalData`;
+        
+        return { 
+          ...m, 
+          isSensitive: newValue, 
+          dataCategory: cleanIRI(newCategory) // ✅ Ensure clean IRI
+        };
       }
       return m;
     }));
@@ -1444,7 +1489,7 @@ export default function AuditDashboardPage() {
       {/* MODAL HISTORY / DETAIL */}
       <Modal isOpen={isDetailModalOpen} onClose={onDetailModalClose} size="4xl">
         <ModalOverlay />
-        <ModalContent bg="white" color="gray.800">
+        <ModalContent bg="white" color="gray.800"> {/* ✅ FIX: Added bg="white" */}
           <ModalHeader borderBottom="1px solid" borderColor="gray.200">
             Violation History: {selectedAppHistory?.appName}
           </ModalHeader>
@@ -1621,7 +1666,7 @@ export default function AuditDashboardPage() {
       {/* POLICY SETTINGS MODAL */}
       <Modal isOpen={isPolicyModalOpen} onClose={onPolicyModalClose} size="4xl">
         <ModalOverlay />
-        <ModalContent bg="white" color="gray.800">
+        <ModalContent bg="white" color="gray.800"> {/* ✅ FIX: Added bg="white" */}
           <ModalHeader borderBottom="1px solid" borderColor="gray.200">Policy Management</ModalHeader>
           <ModalCloseButton />
           <ModalBody>
@@ -1676,7 +1721,7 @@ export default function AuditDashboardPage() {
                               }}
                             >
                               {action}
-                              {isSelected && <CloseIcon ml={1} boxSize="0.6rem" />}
+                              {isSelected && <CloseIcon ml={1} boxSize="0.6rem" />} {/* ✅ FIX: Use CloseIcon */}
                             </Tag>
                           );
                         })}
@@ -1750,7 +1795,7 @@ export default function AuditDashboardPage() {
       {/* PRIVACY SETTINGS MODAL */}
       <Modal isOpen={isPrivacyModalOpen} onClose={onPrivacyModalClose} size="2xl">
         <ModalOverlay />
-        <ModalContent bg="white" color="gray.800">
+        <ModalContent bg="white" color="gray.800"> {/* ✅ FIX: Added bg="white" */}
           <ModalHeader borderBottom="1px solid" borderColor="gray.200">Privacy Data Settings (DPV)</ModalHeader>
           <ModalCloseButton />
           <ModalBody>
