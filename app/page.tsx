@@ -977,8 +977,9 @@ export default function AuditDashboardPage() {
             setStringNoLocale(constraintThing, `${ODRL}rightOperand`, String(constraint.value));
           }
           
-          if (constraint.applicableActions?.length > 0) {
-            constraint.applicableActions.forEach(appAction => {
+          // ✅ FIX: Use nullish coalescing to handle optional applicableActions
+          if ((constraint.applicableActions?.length ?? 0) > 0) {
+            constraint.applicableActions!.forEach(appAction => {
               addUrl(constraintThing, `${EX}applicableAction`, appAction);
             });
           }
