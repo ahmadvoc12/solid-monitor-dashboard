@@ -147,15 +147,14 @@ const SENSITIVE_CATEGORIES = [
 ];
 
 /* ======================================================
-ACTION HIERARCHY - ODRL COMPLIANT ✅ FIXED TYPE
+ACTION HIERARCHY - ODRL COMPLIANT
 ====================================================== */
-// ✅ FIX: Use string | null to allow null values for top-level actions
 const ACTION_HIERARCHY: Record<string, string | null> = {
   [`${EX}read`]: `${ODRL}use`,
   [`${EX}create`]: `${ODRL}use`,
   [`${EX}update`]: `${ODRL}use`,
-  [`${ODRL}use`]: null,        // ✅ Top-level: no parent
-  [`${ODRL}transfer`]: null,   // ✅ Top-level: no parent
+  [`${ODRL}use`]: null,
+  [`${ODRL}transfer`]: null,
 };
 
 function actionIncludedIn(actionA: string, actionB: string): boolean {
@@ -917,8 +916,14 @@ export default function AuditDashboardPage() {
     try {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
       const policyUrl = `${podUrls[0]}${POLICY_PATH}`;
-      let dataset;
-      try { dataset = await getSolidDataset(policyUrl, { fetch: session.fetch }); } catch { dataset = createSolidDataset(); }
+      
+      // ✅ FIX: Add explicit type annotation for dataset
+      let dataset: SolidDataset;
+      try { 
+        dataset = await getSolidDataset(policyUrl, { fetch: session.fetch }); 
+      } catch { 
+        dataset = createSolidDataset(); 
+      }
       
       const targetShort = policy.targetField.replace(/[^a-z0-9]/gi, '-').toLowerCase();
       const hash = Math.random().toString(36).slice(2, 10);
