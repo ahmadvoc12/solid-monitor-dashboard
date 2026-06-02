@@ -96,6 +96,7 @@ import {
   setBoolean,
   setInteger,
   addUrl,
+  removeThing,  // ✅ IMPORT BARU: Untuk delete policy
   ThingPersisted,
   SolidDataset,
 } from '@inrupt/solid-client';
@@ -920,7 +921,7 @@ export default function AuditDashboardPage() {
 
   useEffect(() => { loadPrivacyMappings(); }, [session]);
 
-  // ✅ FIX: savePolicy function with proper URL handling (no blank nodes)
+  // ✅ FIX: savePolicy function - Handle UPDATE vs CREATE properly
   const savePolicy = async (policy: Policy) => {
     if (!session?.info?.webId) return;
     try {
@@ -934,9 +935,10 @@ export default function AuditDashboardPage() {
         dataset = createSolidDataset(); 
       }
       
-      const targetShort = policy.targetField.replace(/[^a-z0-9]/gi, '-').toLowerCase();
-      const hash = Math.random().toString(36).slice(2, 10);
-      const policySubjectUrl = `${EX_BASE}policy-${targetShort}-${hash}`;
+      // ✅ FIX: Use existing policy URL when editing, generate new only for create
+      const policySubjectUrl = editingPolicy?.id 
+        ? editingPolicy.id  // ✅ Use existing URL when updating
+        : `${EX_BASE}policy-${policy.targetField.replace(/[^a-z0-9]/gi, '-')}-${Math.random().toString(36).slice(2, 10)}`;
       
       let policyThing = createThing({ url: policySubjectUrl });
       
@@ -963,9 +965,7 @@ export default function AuditDashboardPage() {
       
       const constraint = policy.constraints[0];
       if (constraint && policy.actions?.length > 0) {
-        // ✅ FIX: Use fragment URLs instead of blank nodes
         policy.actions.forEach((action, idx) => {
-          // ✅ Valid URLs for constraints and permissions (fragment identifiers)
           const constraintUrl = `${policySubjectUrl}#constraint-${idx}`;
           const permissionUrl = `${policySubjectUrl}#permission-${idx}`;
           
@@ -1003,7 +1003,6 @@ export default function AuditDashboardPage() {
           dataset = setThing(dataset, permissionThing);
         });
         
-        // ✅ Also fix prohibition with fragment URL
         const prohibitionUrl = `${policySubjectUrl}#prohibition`;
         const prohibitionThing = createThing({ url: prohibitionUrl });
         setUrl(prohibitionThing, `${ODRL}assignee`, `${EX_BASE}any-app`);
@@ -1012,10 +1011,15 @@ export default function AuditDashboardPage() {
         dataset = setThing(dataset, prohibitionThing);
       }
       
+      // ✅ FIX: If editing and URL changed, remove old policy thing first
+      if (editingPolicy && editingPolicy.id !== policySubjectUrl) {
+        dataset = removeThing(dataset, editingPolicy.id);
+      }
+      
       dataset = setThing(dataset, policyThing);
       await saveSolidDatasetAt(policyUrl, dataset, { fetch: session.fetch });
       
-      toast({ title: 'Policy saved', description: `${policy.title} updated`, status: 'success' });
+      toast({ title: 'Policy saved', description: `${policy.title} ${editingPolicy ? 'updated' : 'created'}`, status: 'success' });
       await loadPolicies();
     } catch (err: any) {
       console.error('Failed to save policy:', err);
@@ -1037,6 +1041,50 @@ export default function AuditDashboardPage() {
         isClosable: true,
       });
       throw err;
+    }
+  };
+
+  // ✅ NEW: Delete Policy Function
+  const deletePolicy = async (policy: Policy) => {
+    if (!session?.info?.webId) return;
+    
+    // Confirmation dialog
+    if (!window.confirm(`Are you sure you want to delete policy "${policy.title}"? This action cannot be undone.`)) {
+      return;
+    }
+    
+    try {
+      const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
+      const policyUrl = `${podUrls[0]}${POLICY_PATH}`;
+      
+      // Load the dataset
+      const dataset = await getSolidDataset(policyUrl, { fetch: session.fetch });
+      
+      // Remove the policy thing from the dataset
+      const updatedDataset = removeThing(dataset, policy.id);
+      
+      // Save the updated dataset
+      await saveSolidDatasetAt(policyUrl, updatedDataset, { fetch: session.fetch });
+      
+      toast({ title: 'Policy deleted', description: `${policy.title} has been deleted`, status: 'success' });
+      await loadPolicies();
+    } catch (err: any) {
+      console.error('Failed to delete policy:', err);
+      let errorMessage = 'Failed to delete policy';
+      if (err?.statusCode === 403 || err?.status === 403) {
+        errorMessage = 'Permission Denied. Check ACLs for policy file.';
+      } else if (err?.statusCode === 404 || err?.status === 404) {
+        errorMessage = 'Policy file not found.';
+      } else if (err?.message) {
+        errorMessage = err.message;
+      }
+      toast({
+        title: 'Failed to delete policy',
+        description: errorMessage,
+        status: 'error',
+        duration: 7000,
+        isClosable: true,
+      });
     }
   };
 
@@ -1782,7 +1830,20 @@ export default function AuditDashboardPage() {
                         </Td>
                         <Td>{policy.constraints.map((c, idx) => <Text key={`${policy.id}-c-${idx}`} fontSize="xs">{c.type === 'count' ? `Count ${c.operator} ${c.value}` : c.type === 'timeWindow' ? `Time ${c.operator} ${c.value}` : `Location ${c.operator} ${c.value}`}</Text>)}</Td>
                         <Td><Switch size="sm" isChecked={policy.active} onChange={() => handleTogglePolicyActive(policy)} /></Td>
-                        <Td><HStack spacing={2}><IconButton size="sm" icon={<EditIcon />} aria-label="Edit" onClick={() => handleEditPolicy(policy)} /><IconButton size="sm" icon={<DeleteIcon />} aria-label="Delete" colorScheme="red" variant="ghost" onClick={() => toast({ title: 'Delete not implemented', status: 'info' })} /></HStack></Td>
+                        <Td>
+                          <HStack spacing={2}>
+                            <IconButton size="sm" icon={<EditIcon />} aria-label="Edit" onClick={() => handleEditPolicy(policy)} />
+                            {/* ✅ FIX: Delete button now calls actual delete function */}
+                            <IconButton 
+                              size="sm" 
+                              icon={<DeleteIcon />} 
+                              aria-label="Delete" 
+                              colorScheme="red" 
+                              variant="ghost" 
+                              onClick={() => deletePolicy(policy)} 
+                            />
+                          </HStack>
+                        </Td>
                       </Tr>
                     ))}
                   </Tbody>
