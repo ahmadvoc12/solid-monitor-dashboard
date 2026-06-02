@@ -121,7 +121,7 @@ PATHS
 ====================================================== */
 const ACCESS_LOG_PATH = 'private/audit/access/access-log.ttl';
 const POLICY_PATH = 'private/audit/access/monitor-policy.ttl';
-const PRIVACY_MAPPING_PATH = 'private/dpv-mapping.jsonld'; // ✅ FIX: Use .jsonld extension
+const PRIVACY_MAPPING_PATH = 'private/dpv-mapping.jsonld'; // ✅ Use .jsonld extension
 const STATE_OF_WORLD_PATH = 'private/audit/monitoring/state-of-the-world.ttl';
 
 /* ======================================================
@@ -862,7 +862,6 @@ export default function AuditDashboardPage() {
     setLoadingPrivacy(true);
     try {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
-      // ✅ FIX: Try .jsonld first, fallback to .ttl for backward compatibility
       const mappingUrl = `${podUrls[0]}${PRIVACY_MAPPING_PATH}`;
       
       let savedMappings: PrivacyMapping[] = [];
@@ -876,7 +875,6 @@ export default function AuditDashboardPage() {
           if (parsed) savedMappings.push(parsed);
         });
       } catch (e: any) {
-        // ✅ Fallback to .ttl if .jsonld not found
         if (e?.status === 404 || e?.statusCode === 404) {
           const fallbackUrl = mappingUrl.replace('.jsonld', '.ttl');
           try {
@@ -934,7 +932,6 @@ export default function AuditDashboardPage() {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
       const policyUrl = `${podUrls[0]}${POLICY_PATH}`;
       
-      // ✅ FIX: Add explicit type annotation for dataset
       let dataset: SolidDataset;
       try { 
         dataset = await getSolidDataset(policyUrl, { fetch: session.fetch }); 
@@ -994,7 +991,6 @@ export default function AuditDashboardPage() {
             setStringNoLocale(constraintThing, `${ODRL}rightOperand`, String(constraint.value));
           }
           
-          // ✅ FIX: Safe check for applicableActions with explicit null check
           if (constraint.applicableActions && constraint.applicableActions.length > 0) {
             constraint.applicableActions.forEach(appAction => {
               addUrl(constraintThing, `${EX}applicableAction`, cleanIRI(appAction));
@@ -1050,10 +1046,8 @@ export default function AuditDashboardPage() {
     if (!session?.info?.webId) return;
     try {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
-      // ✅ FIX: Use .jsonld extension to avoid Turtle prefix issues
       const mappingUrl = `${podUrls[0]}${PRIVACY_MAPPING_PATH}`;
       
-      // ✅ FIX: Properly handle file not found with explicit type
       let dataset: SolidDataset;
       try {
         dataset = await getSolidDataset(mappingUrl, { fetch: session.fetch });
@@ -1066,12 +1060,10 @@ export default function AuditDashboardPage() {
         }
       }
       
-      // ✅ FIX: Process each mapping with proper type safety and FULL IRIs
       privacyMappings.forEach((mapping) => {
         const shortName = schemaToExShort(mapping.fieldIri);
         const subjectUrl = `${EX}${shortName}`;
         
-        // Find existing thing or create new
         let thing = getThingAll(dataset).find((t: any) => 
           cleanIRI(t.url) === cleanIRI(subjectUrl)
         );
@@ -1080,13 +1072,11 @@ export default function AuditDashboardPage() {
           thing = createThing({ url: subjectUrl });
         }
         
-        // ✅ Set required DPV predicates with FULL IRIs (no prefix abbreviation)
         thing = setUrl(thing, `${RDF}type`, `${DPV}PersonalData`);
         thing = setStringNoLocale(thing, `${SKOS}prefLabel`, mapping.fieldLabel);
         thing = setUrl(thing, `${DPV}hasPersonalData`, cleanIRI(mapping.personalDataType));
         thing = setUrl(thing, `${DPV}hasDataCategory`, cleanIRI(mapping.dataCategory));
         
-        // Optional domain field - use full IRI
         if (mapping.domain) {
           thing = setStringNoLocale(thing, `${EX}domain`, mapping.domain);
         }
@@ -1094,10 +1084,10 @@ export default function AuditDashboardPage() {
         dataset = setThing(dataset, thing);
       });
       
-      // ✅ FIX: Save with JSON-LD content type to avoid Turtle prefix issues
+      // ✅ FIX: HAPUS contentType - solid-client menentukan format dari file extension
       await saveSolidDatasetAt(mappingUrl, dataset, { 
-        fetch: session.fetch,
-        contentType: 'application/ld+json'  // ✅ Use JSON-LD instead of Turtle
+        fetch: session.fetch
+        // ✅ File extension .jsonld sudah cukup untuk JSON-LD serialization
       });
       
       toast({ title: 'Success', description: 'Privacy settings saved', status: 'success' });
@@ -1107,14 +1097,13 @@ export default function AuditDashboardPage() {
     } catch (err: any) {
       console.error('Failed to save privacy mappings:', err);
       
-      // ✅ Better error messages for common issues
       let errorMessage = 'Unknown error occurred';
       if (err?.statusCode === 403 || err?.status === 403) {
         errorMessage = 'Permission Denied. Please check ACL settings for the privacy mapping file.';
       } else if (err?.statusCode === 404 || err?.status === 404) {
         errorMessage = 'Container not found. Please ensure the private/ folder exists.';
       } else if (err?.message?.includes('Undefined prefix')) {
-        errorMessage = 'Turtle prefix error. Using JSON-LD format to avoid prefix issues.';
+        errorMessage = 'Turtle prefix error. Using .jsonld extension to avoid prefix issues.';
       } else if (err?.message) {
         errorMessage = err.message;
       }
@@ -1283,11 +1272,9 @@ export default function AuditDashboardPage() {
     onPolicyModalClose();
   };
   
-  // ✅ FIX: Proper type handling for sensitivity toggle
   const handleToggleSensitivity = (fieldIri: string, newValue: boolean) => {
     setPrivacyMappings((prev) => prev.map((m) => {
       if (cleanIRI(m.fieldIri) === cleanIRI(fieldIri)) {
-        // ✅ FIX: Properly set DPV category based on sensitivity with cleanIRI
         const newCategory = newValue 
           ? `${DPV}SensitivePersonalData` 
           : `${DPV}PersonalData`;
@@ -1295,7 +1282,7 @@ export default function AuditDashboardPage() {
         return { 
           ...m, 
           isSensitive: newValue, 
-          dataCategory: cleanIRI(newCategory) // ✅ Ensure clean IRI
+          dataCategory: cleanIRI(newCategory)
         };
       }
       return m;
@@ -1719,7 +1706,6 @@ export default function AuditDashboardPage() {
                       {editingPolicy && <FormHelperText>Target field cannot be changed for existing policies</FormHelperText>}
                     </FormControl>
                     
-                    {/* ✅ Multi-Action Selection */}
                     <FormControl>
                       <FormLabel>Allowed Actions</FormLabel>
                       <HStack spacing={2} wrap="wrap">
