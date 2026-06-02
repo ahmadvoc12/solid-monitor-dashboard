@@ -121,7 +121,7 @@ PATHS
 ====================================================== */
 const ACCESS_LOG_PATH = 'private/audit/access/access-log.ttl';
 const POLICY_PATH = 'private/audit/access/monitor-policy.ttl';
-const PRIVACY_MAPPING_PATH = 'private/dpv-mapping.jsonld'; // ✅ Use .jsonld extension
+const PRIVACY_MAPPING_PATH = 'private/dpv-mapping.jsonld';
 const STATE_OF_WORLD_PATH = 'private/audit/monitoring/state-of-the-world.ttl';
 
 /* ======================================================
@@ -383,7 +383,7 @@ type StateOfTheWorld = {
 };
 
 /* ======================================================
-PARSE ACCESS LOG ENTRY
+PARSE FUNCTIONS (unchanged)
 ====================================================== */
 function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry | null {
   try {
@@ -492,9 +492,6 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
   }
 }
 
-/* ======================================================
-PARSE STATE OF THE WORLD
-====================================================== */
 function parseStateOfTheWorld(thing: any, dataset: SolidDataset): StateOfTheWorld | null {
   try {
     const types = getUrlAll(thing, `${RDF}type`);
@@ -546,9 +543,6 @@ function parseStateOfTheWorld(thing: any, dataset: SolidDataset): StateOfTheWorl
   }
 }
 
-/* ======================================================
-PARSE PRIVACY MAPPING
-====================================================== */
 function parsePrivacyMapping(thing: any): PrivacyMapping | null {
   try {
     const types = getUrlAll(thing, `${RDF}type`);
@@ -926,6 +920,7 @@ export default function AuditDashboardPage() {
 
   useEffect(() => { loadPrivacyMappings(); }, [session]);
 
+  // ✅ FIX: savePolicy function with proper URL handling (no blank nodes)
   const savePolicy = async (policy: Policy) => {
     if (!session?.info?.webId) return;
     try {
@@ -968,14 +963,14 @@ export default function AuditDashboardPage() {
       
       const constraint = policy.constraints[0];
       if (constraint && policy.actions?.length > 0) {
-        const blankPrefix = `b752_n3-${Date.now().toString(36).slice(-4)}-${Math.random().toString(36).slice(2, 4)}`;
-        
+        // ✅ FIX: Use fragment URLs instead of blank nodes
         policy.actions.forEach((action, idx) => {
-          const constraintBlankId = `_:${blankPrefix}-constraint-${idx}`;
-          const permissionBlankId = `_:${blankPrefix}-permission-${idx}`;
+          // ✅ Valid URLs for constraints and permissions (fragment identifiers)
+          const constraintUrl = `${policySubjectUrl}#constraint-${idx}`;
+          const permissionUrl = `${policySubjectUrl}#permission-${idx}`;
           
-          const constraintThing = createThing({ url: constraintBlankId });
-          const permissionThing = createThing({ url: permissionBlankId });
+          const constraintThing = createThing({ url: constraintUrl });
+          const permissionThing = createThing({ url: permissionUrl });
           
           if (constraint.type === 'count') {
             setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}count`);
@@ -1008,8 +1003,9 @@ export default function AuditDashboardPage() {
           dataset = setThing(dataset, permissionThing);
         });
         
-        const prohibitionBlankId = `_:${blankPrefix}-prohibition`;
-        const prohibitionThing = createThing({ url: prohibitionBlankId });
+        // ✅ Also fix prohibition with fragment URL
+        const prohibitionUrl = `${policySubjectUrl}#prohibition`;
+        const prohibitionThing = createThing({ url: prohibitionUrl });
         setUrl(prohibitionThing, `${ODRL}assignee`, `${EX_BASE}any-app`);
         setUrl(prohibitionThing, `${ODRL}action`, `${ODRL}distribute`);
         policyThing = addUrl(policyThing, `${ODRL}prohibition`, prohibitionThing.url);
@@ -1028,6 +1024,8 @@ export default function AuditDashboardPage() {
         errorMessage = 'Permission Denied. Check ACLs for policy file.';
       } else if (err?.statusCode === 404 || err?.status === 404) {
         errorMessage = 'Policy container not found.';
+      } else if (err?.message?.includes('Expected a valid URL')) {
+        errorMessage = 'Invalid URL format. Please contact support.';
       } else if (err?.message) {
         errorMessage = err.message;
       }
@@ -1084,10 +1082,8 @@ export default function AuditDashboardPage() {
         dataset = setThing(dataset, thing);
       });
       
-      // ✅ FIX: HAPUS contentType - solid-client menentukan format dari file extension
       await saveSolidDatasetAt(mappingUrl, dataset, { 
         fetch: session.fetch
-        // ✅ File extension .jsonld sudah cukup untuk JSON-LD serialization
       });
       
       toast({ title: 'Success', description: 'Privacy settings saved', status: 'success' });
