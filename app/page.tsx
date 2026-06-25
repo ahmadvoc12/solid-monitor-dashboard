@@ -25,7 +25,6 @@ import {
 
 /* ======================================================
    CONSTANTS & ONTOLOGY PREFIXES
-   (Disesuaikan dengan Listing 5, 5b, 6 di paper)
 ====================================================== */
 const DPV = 'https://w3id.org/dpv#';
 const DCT = 'http://purl.org/dc/terms/';
@@ -33,7 +32,6 @@ const EX = 'https://example.org/privacy#';
 const EX_BASE = 'https://example.org/';
 const ODRL = 'http://www.w3.org/ns/odrl/2/';
 const XSD = 'http://www.w3.org/2001/XMLSchema#';
-// ✅ Menggunakan report: (Compliance Report Model) bukan FORCE
 const REPORT = 'https://w3id.org/force/compliance-report#';
 const PROV = 'http://www.w3.org/ns/prov#';
 const RDF = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
@@ -50,7 +48,7 @@ const PRIVACY_MAPPING_PATH = 'private/dpv-mapping.jsonld';
 const STATE_OF_WORLD_PATH = 'private/audit/monitoring/state-of-the-world.ttl';
 
 /* ======================================================
-   FIELD LABEL MAPPING (dari revisi R3)
+   FIELD LABEL MAPPING
 ====================================================== */
 const FIELD_LABELS: Record<string, string> = {
   'https://schema.org/identifier': 'Identifier Number Person',
@@ -189,13 +187,11 @@ function exShortToSchema(shortName: string): string | null {
   return null;
 }
 
-// ✅ Helper: Format datetime ke ISO string untuk xsd:dateTime
 function toXsdDateTime(date: Date | string): string {
   const d = typeof date === 'string' ? new Date(date) : date;
   return d.toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
-// ✅ Helper: Parse xsd:dateTime ke Date object
 function parseXsdDateTime(value: string | undefined): Date | null {
   if (!value) return null;
   try {
@@ -206,7 +202,7 @@ function parseXsdDateTime(value: string | undefined): Date | null {
 }
 
 /* ======================================================
-   TYPES (Diperluas untuk recipient & temporal)
+   TYPES
 ====================================================== */
 type AccessedField = {
   fieldIri: string;
@@ -217,7 +213,6 @@ type AccessedField = {
   personalDataType: string;
 };
 
-// ✅ Disesuaikan dengan Listing 6 (Compliance Report Model)
 type PolicyEvaluation = {
   evaluatedPolicy: string;
   evaluationResult: 'ALLOWED' | 'VIOLATION';
@@ -250,17 +245,19 @@ type AccessLogEntry = {
   violations: FieldViolation[];
   hasSensitiveData: boolean;
   violatedPolicies: string[];
-  // ✅ Field baru untuk compliance report
   activationState?: string;
   attemptState?: string;
   performanceState?: string;
   deonticState?: string;
 };
 
-// ✅ Diperluas: tambah 'recipient' dan 'temporal' sesuai revisi paper
+// ✅ FIXED: Explicit type definition for constraint types
+type ConstraintType = 'count' | 'timeWindow' | 'location' | 'recipient' | 'temporal';
+type ConstraintOperator = 'lteq' | 'gteq' | 'eq' | 'isAnyOf';
+
 type PolicyConstraint = {
-  type: 'count' | 'timeWindow' | 'location' | 'recipient' | 'temporal';
-  operator: 'lteq' | 'gteq' | 'eq' | 'isAnyOf';
+  type: ConstraintType;
+  operator: ConstraintOperator;
   value: string | number | Date;
   unit?: 'hours' | 'days' | 'km' | 'version';
   applicableActions?: string[];
@@ -278,7 +275,7 @@ type Policy = {
   prohibitions?: string[];
   constraints: PolicyConstraint[];
   createdAt?: Date;
-  assignee?: string;   // ✅ WebID aplikasi yang diizinkan
+  assignee?: string;
   assigner?: string;
 };
 
@@ -306,24 +303,43 @@ type StateOfTheWorld = {
 };
 
 /* ======================================================
+   ✅ HELPER: Create default constraint with proper typing
+====================================================== */
+function createDefaultConstraint(type: ConstraintType = 'count'): PolicyConstraint {
+  switch (type) {
+    case 'count':
+      return { type: 'count', operator: 'lteq', value: 1 };
+    case 'recipient':
+      return { type: 'recipient', operator: 'eq', value: '' };
+    case 'temporal': {
+      const d = new Date();
+      d.setFullYear(d.getFullYear() + 1);
+      return { type: 'temporal', operator: 'lteq', value: d };
+    }
+    case 'location':
+      return { type: 'location', operator: 'eq', value: '' };
+    case 'timeWindow':
+      return { type: 'timeWindow', operator: 'lteq', value: 24 };
+    default:
+      return { type: 'count', operator: 'lteq', value: 1 };
+  }
+}
+
+/* ======================================================
    PARSE FUNCTIONS
-   (Disesuaikan dengan Listing 6 - Compliance Report Model)
 ====================================================== */
 function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry | null {
   try {
     const types = getUrlAll(thing, `${RDF}type`);
-    // ✅ Harus memiliki prov:Activity atau report:PermissionReport
     const isActivity = types.some((t: string) => t.includes('Activity'));
     const isPermissionReport = types.some((t: string) => t.includes('PermissionReport'));
     if (!isActivity && !isPermissionReport) return null;
 
-    // ✅ Gunakan report:deonticState (sesuai Listing 6)
     const deonticState = getStringNoLocaleAll(thing, `${REPORT}deonticState`)[0];
     let decision: 'ALLOWED' | 'VIOLATION';
     if (deonticState) {
       decision = deonticState.includes('Violated') ? 'VIOLATION' : 'ALLOWED';
     } else {
-      // Fallback untuk backward compatibility
       const legacyDecision = getStringNoLocaleAll(thing, `${REPORT}decision`)[0];
       decision = (legacyDecision as 'ALLOWED' | 'VIOLATION') || 'ALLOWED';
     }
@@ -335,12 +351,10 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
     const accessMethod = getStringNoLocaleAll(thing, `${ODRL}action`)[0] ?? 'read';
     const accessedResource = cleanIRI(getUrlAll(thing, `${PROV}used`)[0] ?? '');
 
-    // ✅ Parse compliance states dari Listing 6
     const activationState = getStringNoLocaleAll(thing, `${REPORT}activationState`)[0];
     const attemptState = getStringNoLocaleAll(thing, `${REPORT}attemptState`)[0];
     const performanceState = getStringNoLocaleAll(thing, `${REPORT}performanceState`)[0];
 
-    // Parse fields (jika ada bundle)
     const fields: AccessedField[] = [];
     const fieldsBundle = getUrlAll(thing, `${REPORT}hasFieldsBundle`)[0]
       ?? getUrlAll(thing, `${EX}hasFieldsBundle`)[0];
@@ -364,7 +378,6 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
       });
     }
 
-    // ✅ Parse policy evaluations (sesuai Listing 6)
     const policyEvaluations: PolicyEvaluation[] = [];
     const evaluatedPolicies = getUrlAll(thing, `${REPORT}rule`);
     evaluatedPolicies.forEach((policyUrl: string) => {
@@ -380,14 +393,11 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
       });
     });
 
-    // Parse violations
     const violations: FieldViolation[] = [];
     const violatedPolicies: string[] = [];
 
     if (decision === 'VIOLATION') {
       evaluatedPolicies.forEach(p => violatedPolicies.push(cleanIRI(p)));
-
-      // Jika ada field yang sensitive, anggap sebagai violated field
       fields.filter(f => f.isSensitive).forEach(f => {
         violations.push({
           violatedField: f.fieldIri,
@@ -531,7 +541,7 @@ export default function AuditDashboardPage() {
   const [loadingPolicies, setLoadingPolicies] = useState(false);
   const [editingPolicy, setEditingPolicy] = useState<Policy | null>(null);
 
-  // ✅ Default policy dengan constraint recipient & temporal
+  // ✅ FIXED: Use createDefaultConstraint for proper typing
   const [newPolicy, setNewPolicy] = useState<Partial<Policy>>({
     title: '',
     description: '',
@@ -539,8 +549,8 @@ export default function AuditDashboardPage() {
     targetIRI: '',
     active: true,
     actions: ['ex:read'],
-    constraints: [{ type: 'count', operator: 'lteq', value: 1 }],
-    assignee: '', // WebID aplikasi yang diizinkan
+    constraints: [createDefaultConstraint('count')],
+    assignee: '',
   });
 
   const [privacyMappings, setPrivacyMappings] = useState<PrivacyMapping[]>([]);
@@ -670,7 +680,6 @@ export default function AuditDashboardPage() {
 
   useEffect(() => { loadStateOfTheWorld(); }, [session]);
 
-  // ✅ DIPERBAIKI: loadPolicies sekarang membaca recipient & temporal
   const loadPolicies = async () => {
     if (!session?.info?.webId) return;
     setLoadingPolicies(true);
@@ -696,19 +705,16 @@ export default function AuditDashboardPage() {
         const prohibitions: string[] = [];
         const constraints: PolicyConstraint[] = [];
 
-        // ✅ Parse permissions
         const permissions = getUrlAll(thing, `${ODRL}permission`);
         permissions.forEach((permUrl: string) => {
           const permThing = getThingAll(dataset).find((t: any) => t.url === permUrl);
           if (permThing) {
-            // Parse actions
             const actionUrls = getUrlAll(permThing, `${ODRL}action`);
             actionUrls.forEach((action: string) => {
               const cleanAction = cleanIRI(action);
               if (!actions.includes(cleanAction)) actions.push(cleanAction);
             });
 
-            // ✅ Parse constraints (count, recipient, temporal, location)
             const constraintUrls = getUrlAll(permThing, `${ODRL}constraint`);
             constraintUrls.forEach((cUrl: string) => {
               const cThing = getThingAll(dataset).find((t: any) => t.url === cUrl);
@@ -718,37 +724,30 @@ export default function AuditDashboardPage() {
                 const rightOperandStr = getStringNoLocaleAll(cThing, `${ODRL}rightOperand`)[0];
                 const rightOperandInt = getInteger(cThing, `${ODRL}rightOperand`);
 
-                // ✅ COUNT constraint
                 if (leftOperand.includes('count')) {
                   constraints.push({
                     type: 'count',
-                    operator: op.includes('lteq') ? 'lteq' : op.includes('gteq') ? 'gteq' : 'eq',
+                    operator: (op.includes('lteq') ? 'lteq' : op.includes('gteq') ? 'gteq' : 'eq') as ConstraintOperator,
                     value: rightOperandInt ?? 0,
                   });
-                }
-                // ✅ RECIPIENT constraint (odrl:assignee) - sesuai Listing 5b
-                else if (leftOperand.includes('assignee') || leftOperand.includes('recipient')) {
+                } else if (leftOperand.includes('assignee') || leftOperand.includes('recipient')) {
                   const recipientValue = rightOperandStr || getUrlAll(cThing, `${ODRL}rightOperand`)[0] || '';
                   constraints.push({
                     type: 'recipient',
-                    operator: 'eq',
+                    operator: 'eq' as ConstraintOperator,
                     value: cleanIRI(recipientValue),
                   });
-                }
-                // ✅ TEMPORAL constraint (odrl:dateTime) - sesuai Listing 5b
-                else if (leftOperand.includes('dateTime') || leftOperand.includes('date')) {
+                } else if (leftOperand.includes('dateTime') || leftOperand.includes('date')) {
                   const dateValue = rightOperandStr || '';
                   constraints.push({
                     type: 'temporal',
-                    operator: op.includes('lteq') ? 'lteq' : op.includes('gteq') ? 'gteq' : 'eq',
+                    operator: (op.includes('lteq') ? 'lteq' : op.includes('gteq') ? 'gteq' : 'eq') as ConstraintOperator,
                     value: dateValue,
                   });
-                }
-                // Location constraint
-                else if (leftOperand.includes('spatial')) {
+                } else if (leftOperand.includes('spatial')) {
                   constraints.push({
                     type: 'location',
-                    operator: 'eq',
+                    operator: 'eq' as ConstraintOperator,
                     value: rightOperandStr || '',
                   });
                 }
@@ -757,7 +756,6 @@ export default function AuditDashboardPage() {
           }
         });
 
-        // ✅ Parse prohibitions
         const prohibitionUrls = getUrlAll(thing, `${ODRL}prohibition`);
         prohibitionUrls.forEach((prohibUrl: string) => {
           const prohibThing = getThingAll(dataset).find((t: any) => t.url === prohibUrl);
@@ -772,7 +770,7 @@ export default function AuditDashboardPage() {
 
         if (actions.length === 0) actions.push(`${EX}read`);
         if (constraints.length === 0) {
-          constraints.push({ type: 'count', operator: 'lteq', value: 1 });
+          constraints.push(createDefaultConstraint('count'));
         }
 
         parsed.push({
@@ -804,7 +802,7 @@ export default function AuditDashboardPage() {
           targetIRI: 'https://schema.org/bloodType',
           active: true,
           actions: ['ex:read'],
-          constraints: [{ type: 'count', operator: 'lteq', value: 1 }],
+          constraints: [createDefaultConstraint('count')],
         },
       ]);
     } finally {
@@ -875,7 +873,6 @@ export default function AuditDashboardPage() {
 
   useEffect(() => { loadPrivacyMappings(); }, [session]);
 
-  // ✅ DIPERBAIKI: savePolicy mendukung recipient & temporal constraint
   const savePolicy = async (policy: Policy) => {
     if (!session?.info?.webId) return;
     try {
@@ -910,12 +907,10 @@ export default function AuditDashboardPage() {
       policyThing = setUrl(policyThing, `${ODRL}target`, fullTargetIri);
       policyThing = setBoolean(policyThing, `${REPORT}policyActive`, policy.active);
 
-      // ✅ Assignee policy-level (jika ada)
       if (policy.assignee) {
         policyThing = setUrl(policyThing, `${ODRL}assignee`, cleanIRI(policy.assignee));
       }
 
-      // ✅ Process constraints & actions
       if (policy.constraints?.length > 0 && policy.actions?.length > 0) {
         policy.actions.forEach((action, idx) => {
           const permissionUrl = `${policySubjectUrl}#permission-${idx}`;
@@ -925,7 +920,6 @@ export default function AuditDashboardPage() {
           setUrl(permissionThing, `${ODRL}assignee`, policy.assignee ? cleanIRI(policy.assignee) : `${EX_BASE}any-app`);
           setUrl(permissionThing, `${ODRL}action`, action);
 
-          // ✅ Tambahkan semua constraints ke permission ini
           policy.constraints.forEach((constraint, cIdx) => {
             const constraintUrl = `${policySubjectUrl}#constraint-${idx}-${cIdx}`;
             const constraintThing = createThing({ url: constraintUrl });
@@ -934,29 +928,22 @@ export default function AuditDashboardPage() {
               setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}count`);
               setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
               setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value));
-            }
-            // ✅ RECIPIENT constraint (odrl:assignee)
-            else if (constraint.type === 'recipient') {
+            } else if (constraint.type === 'recipient') {
               setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}assignee`);
               setUrl(constraintThing, `${ODRL}operator`, `${ODRL}eq`);
               setUrl(constraintThing, `${ODRL}rightOperand`, cleanIRI(String(constraint.value)));
-            }
-            // ✅ TEMPORAL constraint (odrl:dateTime)
-            else if (constraint.type === 'temporal') {
+            } else if (constraint.type === 'temporal') {
               setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}dateTime`);
               setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
-              // Simpan sebagai xsd:dateTime string
               const dateValue = constraint.value instanceof Date
                 ? toXsdDateTime(constraint.value)
                 : String(constraint.value);
               setStringNoLocale(constraintThing, `${ODRL}rightOperand`, dateValue);
-            }
-            else if (constraint.type === 'location') {
+            } else if (constraint.type === 'location') {
               setUrl(constraintThing, `${ODRL}leftOperand`, `${ODRL}spatial`);
               setUrl(constraintThing, `${ODRL}operator`, `${ODRL}eq`);
               setStringNoLocale(constraintThing, `${ODRL}rightOperand`, String(constraint.value));
-            }
-            else if (constraint.type === 'timeWindow') {
+            } else if (constraint.type === 'timeWindow') {
               setUrl(constraintThing, `${ODRL}leftOperand`, `${EX_BASE}timeWindow`);
               setUrl(constraintThing, `${ODRL}operator`, `${ODRL}${constraint.operator}`);
               setInteger(constraintThing, `${ODRL}rightOperand`, Number(constraint.value));
@@ -970,7 +957,6 @@ export default function AuditDashboardPage() {
           dataset = setThing(dataset, permissionThing);
         });
 
-        // ✅ Prohibitions (termasuk extended: distribute, derive, transfer)
         const prohibitionUrl = `${policySubjectUrl}#prohibition`;
         const prohibitionThing = createThing({ url: prohibitionUrl });
         setUrl(prohibitionThing, `${ODRL}assignee`, `${EX_BASE}any-app`);
@@ -1010,7 +996,6 @@ export default function AuditDashboardPage() {
       const policyUrl = `${podUrls[0]}${POLICY_PATH}`;
       const dataset = await getSolidDataset(policyUrl, { fetch: session.fetch });
 
-      // ✅ Hapus juga constraint & permission things yang terkait
       const updatedDataset = removeThing(dataset, policy.id);
       await saveSolidDatasetAt(policyUrl, updatedDataset, { fetch: session.fetch });
 
@@ -1164,6 +1149,7 @@ export default function AuditDashboardPage() {
     return undefined;
   };
 
+  // ✅ FIXED: Use createDefaultConstraint
   const handleAddPolicy = () => {
     setEditingPolicy(null);
     setNewPolicy({
@@ -1173,7 +1159,7 @@ export default function AuditDashboardPage() {
       targetIRI: '',
       active: true,
       actions: ['ex:read'],
-      constraints: [{ type: 'count', operator: 'lteq', value: 1 }],
+      constraints: [createDefaultConstraint('count')],
       assignee: '',
     });
     onPolicyModalOpen();
@@ -1203,7 +1189,7 @@ export default function AuditDashboardPage() {
       targetIRI: editingPolicy?.targetIRI || newPolicy.targetField,
       active: newPolicy.active ?? true,
       actions: newPolicy.actions || ['ex:read'],
-      constraints: newPolicy.constraints || [{ type: 'count', operator: 'lteq', value: 1 }],
+      constraints: newPolicy.constraints || [createDefaultConstraint('count')],
       createdAt: editingPolicy?.createdAt || new Date(),
       assignee: newPolicy.assignee,
     };
@@ -1221,7 +1207,6 @@ export default function AuditDashboardPage() {
     }));
   };
 
-  // ✅ Helper: Format constraint untuk display
   const formatConstraint = (c: PolicyConstraint): string => {
     if (c.type === 'count') return `Count ${c.operator} ${c.value}`;
     if (c.type === 'recipient') return `Recipient: ${shortIri(String(c.value))}`;
@@ -1232,6 +1217,15 @@ export default function AuditDashboardPage() {
     if (c.type === 'timeWindow') return `Time ${c.operator} ${c.value}h`;
     if (c.type === 'location') return `Location: ${c.value}`;
     return `${c.type}: ${c.value}`;
+  };
+
+  // ✅ FIXED: Helper to update a constraint at a specific index with proper typing
+  const updateConstraintAtIndex = (idx: number, updates: Partial<PolicyConstraint>) => {
+    setNewPolicy((p) => {
+      const nc = [...(p.constraints || [])];
+      nc[idx] = { ...nc[idx], ...updates } as PolicyConstraint;
+      return { ...p, constraints: nc };
+    });
   };
 
   return (
@@ -1484,7 +1478,7 @@ export default function AuditDashboardPage() {
         </ModalContent>
       </Modal>
 
-      {/* ✅ POLICY SETTINGS MODAL - DIPERBAIKI dengan recipient & temporal */}
+      {/* POLICY SETTINGS MODAL */}
       <Modal isOpen={isPolicyModalOpen} onClose={onPolicyModalClose} size="5xl">
         <ModalOverlay />
         <ModalContent bg="white" color="gray.800">
@@ -1540,7 +1534,6 @@ export default function AuditDashboardPage() {
                       </Select>
                     </FormControl>
 
-                    {/* ✅ RECIPIENT / ASSIGNEE - sesuai Listing 5b */}
                     <FormControl>
                       <FormLabel>
                         Authorized Recipient (WebID)
@@ -1586,7 +1579,7 @@ export default function AuditDashboardPage() {
                       </HStack>
                     </FormControl>
 
-                    {/* ✅ CONSTRAINTS - Diperluas dengan recipient & temporal */}
+                    {/* ✅ CONSTRAINTS - FIXED with proper typing */}
                     <Box>
                       <Text fontWeight="bold" mb={2}>Constraints</Text>
                       <VStack spacing={3} align="stretch">
@@ -1596,19 +1589,13 @@ export default function AuditDashboardPage() {
                               <Select
                                 value={constraint.type}
                                 onChange={(e) => {
-                                  const nc = [...(newPolicy.constraints || [])];
-                                  const newType = e.target.value as PolicyConstraint['type'];
-                                  let newValue: string | number | Date = 1;
-                                  if (newType === 'location') newValue = '';
-                                  else if (newType === 'recipient') newValue = '';
-                                  else if (newType === 'temporal') {
-                                    // Default: 1 tahun dari sekarang
-                                    const d = new Date();
-                                    d.setFullYear(d.getFullYear() + 1);
-                                    newValue = d;
-                                  }
-                                  nc[idx] = { ...constraint, type: newType, value: newValue };
-                                  setNewPolicy((p) => ({ ...p, constraints: nc }));
+                                  const newType = e.target.value as ConstraintType;
+                                  const newConstraint = createDefaultConstraint(newType);
+                                  updateConstraintAtIndex(idx, {
+                                    type: newType,
+                                    value: newConstraint.value,
+                                    operator: newConstraint.operator,
+                                  });
                                 }}
                                 size="sm"
                                 width="180px"
@@ -1620,16 +1607,11 @@ export default function AuditDashboardPage() {
                                 <option value="location">📍 Location</option>
                               </Select>
 
-                              {/* ✅ Input berdasarkan tipe constraint */}
                               {constraint.type === 'count' && (
                                 <>
                                   <Select
                                     value={constraint.operator}
-                                    onChange={(e) => {
-                                      const nc = [...(newPolicy.constraints || [])];
-                                      nc[idx] = { ...constraint, operator: e.target.value as PolicyConstraint['operator'] };
-                                      setNewPolicy((p) => ({ ...p, constraints: nc }));
-                                    }}
+                                    onChange={(e) => updateConstraintAtIndex(idx, { operator: e.target.value as ConstraintOperator })}
                                     size="sm"
                                     width="80px"
                                   >
@@ -1639,11 +1621,7 @@ export default function AuditDashboardPage() {
                                   </Select>
                                   <NumberInput
                                     value={constraint.value as number}
-                                    onChange={(_, val) => {
-                                      const nc = [...(newPolicy.constraints || [])];
-                                      nc[idx] = { ...constraint, value: val };
-                                      setNewPolicy((p) => ({ ...p, constraints: nc }));
-                                    }}
+                                    onChange={(_, val) => updateConstraintAtIndex(idx, { value: val })}
                                     size="sm"
                                     width="100px"
                                   >
@@ -1662,11 +1640,7 @@ export default function AuditDashboardPage() {
                                   flex={1}
                                   placeholder="https://app.example.org/profile/card#me"
                                   value={constraint.value as string}
-                                  onChange={(e) => {
-                                    const nc = [...(newPolicy.constraints || [])];
-                                    nc[idx] = { ...constraint, value: e.target.value };
-                                    setNewPolicy((p) => ({ ...p, constraints: nc }));
-                                  }}
+                                  onChange={(e) => updateConstraintAtIndex(idx, { value: e.target.value })}
                                   size="sm"
                                 />
                               )}
@@ -1675,11 +1649,7 @@ export default function AuditDashboardPage() {
                                 <>
                                   <Select
                                     value={constraint.operator}
-                                    onChange={(e) => {
-                                      const nc = [...(newPolicy.constraints || [])];
-                                      nc[idx] = { ...constraint, operator: e.target.value as PolicyConstraint['operator'] };
-                                      setNewPolicy((p) => ({ ...p, constraints: nc }));
-                                    }}
+                                    onChange={(e) => updateConstraintAtIndex(idx, { operator: e.target.value as ConstraintOperator })}
                                     size="sm"
                                     width="100px"
                                   >
@@ -1693,11 +1663,7 @@ export default function AuditDashboardPage() {
                                         ? toXsdDateTime(constraint.value).slice(0, 16)
                                         : String(constraint.value).slice(0, 16)
                                     }
-                                    onChange={(e) => {
-                                      const nc = [...(newPolicy.constraints || [])];
-                                      nc[idx] = { ...constraint, value: new Date(e.target.value) };
-                                      setNewPolicy((p) => ({ ...p, constraints: nc }));
-                                    }}
+                                    onChange={(e) => updateConstraintAtIndex(idx, { value: new Date(e.target.value) })}
                                     size="sm"
                                     width="220px"
                                   />
@@ -1709,11 +1675,7 @@ export default function AuditDashboardPage() {
                                   flex={1}
                                   placeholder="City, Region, or Country"
                                   value={constraint.value as string}
-                                  onChange={(e) => {
-                                    const nc = [...(newPolicy.constraints || [])];
-                                    nc[idx] = { ...constraint, value: e.target.value };
-                                    setNewPolicy((p) => ({ ...p, constraints: nc }));
-                                  }}
+                                  onChange={(e) => updateConstraintAtIndex(idx, { value: e.target.value })}
                                   size="sm"
                                 />
                               )}
@@ -1722,11 +1684,7 @@ export default function AuditDashboardPage() {
                                 <>
                                   <Select
                                     value={constraint.operator}
-                                    onChange={(e) => {
-                                      const nc = [...(newPolicy.constraints || [])];
-                                      nc[idx] = { ...constraint, operator: e.target.value as PolicyConstraint['operator'] };
-                                      setNewPolicy((p) => ({ ...p, constraints: nc }));
-                                    }}
+                                    onChange={(e) => updateConstraintAtIndex(idx, { operator: e.target.value as ConstraintOperator })}
                                     size="sm"
                                     width="80px"
                                   >
@@ -1735,11 +1693,7 @@ export default function AuditDashboardPage() {
                                   </Select>
                                   <NumberInput
                                     value={constraint.value as number}
-                                    onChange={(_, val) => {
-                                      const nc = [...(newPolicy.constraints || [])];
-                                      nc[idx] = { ...constraint, value: val };
-                                      setNewPolicy((p) => ({ ...p, constraints: nc }));
-                                    }}
+                                    onChange={(_, val) => updateConstraintAtIndex(idx, { value: val })}
                                     size="sm"
                                     width="100px"
                                   >
@@ -1761,19 +1715,26 @@ export default function AuditDashboardPage() {
                                 variant="ghost"
                                 onClick={() => {
                                   const nc = (newPolicy.constraints || []).filter((_, i) => i !== idx);
-                                  setNewPolicy((p) => ({ ...p, constraints: nc.length ? nc : [{ type: 'count', operator: 'lteq', value: 1 }] }));
+                                  setNewPolicy((p) => ({
+                                    ...p,
+                                    constraints: nc.length ? nc : [createDefaultConstraint('count')]
+                                  }));
                                 }}
                               />
                             </HStack>
                           </Box>
                         ))}
 
+                        {/* ✅ FIXED: Use createDefaultConstraint for proper typing */}
                         <Button
                           size="sm"
                           leftIcon={<AddIcon />}
                           onClick={() => {
-                            const nc = [...(newPolicy.constraints || []), { type: 'count', operator: 'lteq', value: 1 }];
-                            setNewPolicy((p) => ({ ...p, constraints: nc }));
+                            const newConstraint = createDefaultConstraint('count');
+                            setNewPolicy((p) => ({
+                              ...p,
+                              constraints: [...(p.constraints || []), newConstraint]
+                            }));
                           }}
                         >
                           Add Constraint
