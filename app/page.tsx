@@ -68,6 +68,9 @@ const ACTION_HIERARCHY: Record<string, string | null> = {
   [`${ODRL}transfer`]: null,
 };
 
+/* ======================================================
+   ✅ Normalize action IRI to short form (ex:read, ex:create, ex:update)
+====================================================== */
 function normalizeAction(actionIri: string): string {
   const clean = cleanIRI(actionIri);
   if (!clean) return '';
@@ -89,6 +92,9 @@ function normalizeAction(actionIri: string): string {
   return `ex:${short}`;
 }
 
+/* ======================================================
+   ✅ Convert short action form back to full IRI for storage
+====================================================== */
 function actionToFullIri(actionShort: string): string {
   if (actionShort === 'ex:read') return `${EX}read`;
   if (actionShort === 'ex:create') return `${EX}create`;
@@ -900,6 +906,10 @@ export default function AuditDashboardPage() {
 
   useEffect(() => { loadStateOfTheWorld(); }, [session]);
 
+  /* ======================================================
+     ✅ FIXED: loadPolicies - normalize actions & parse all constraint types
+     ✅ NO default count constraint fallback
+====================================================== */
   const loadPolicies = async () => {
     if (!session?.info?.webId) return;
     setLoadingPolicies(true);
@@ -1032,19 +1042,7 @@ export default function AuditDashboardPage() {
       console.log('✅ Loaded policies:', parsed.length);
     } catch (err) {
       console.error('Failed to load policies:', err);
-      setPolicies([
-        {
-          id: 'default-bloodtype',
-          identifier: generatePolicyIdentifier(),
-          title: 'Blood Type Access Limit',
-          description: 'Limit bloodType access to 1 per session',
-          targetField: 'bloodType',
-          targetIRI: 'https://schema.org/bloodType',
-          active: true,
-          actions: ['ex:read'],
-          constraints: [createDefaultConstraint('count')],
-        },
-      ]);
+      setPolicies([]);
     } finally {
       setLoadingPolicies(false);
     }
@@ -1129,6 +1127,10 @@ export default function AuditDashboardPage() {
 
   useEffect(() => { loadPrivacyMappings(); }, [session]);
 
+  /* ======================================================
+     ✅ FIXED: savePolicy - proper cleanup & single permission structure
+     ✅ TypeScript-safe implementation
+====================================================== */
   const savePolicy = async (policy: Policy) => {
     if (!session?.info?.webId) return;
     try {
@@ -1142,38 +1144,41 @@ export default function AuditDashboardPage() {
         dataset = createSolidDataset();
       }
 
-      // Remove old policy if editing
+      // ✅ FIXED: Remove old policy and all related things properly (TypeScript-safe)
       if (editingPolicy) {
         const oldPolicyUrl = editingPolicy.id;
+        const allThings = getThingAll(dataset);
         
-        // Remove old permissions and constraints
-        const oldPermissions = getUrlAll(dataset, oldPolicyUrl).filter(t => 
-          getUrlAll(t, `${RDF}type`).some(type => type.includes('Permission'))
-        );
+        const oldPolicyThing = allThings.find(t => cleanIRI(t.url) === cleanIRI(oldPolicyUrl));
         
-        oldPermissions.forEach(permThing => {
-          const constraintUrls = getUrlAll(permThing, `${ODRL}constraint`);
-          constraintUrls.forEach(cUrl => {
-            const cThing = getThingAll(dataset).find((t: any) => 
-              t.url === cUrl || cleanIRI(t.url) === cleanIRI(cUrl)
-            );
-            if (cThing) {
-              dataset = removeThing(dataset, cThing);
+        if (oldPolicyThing) {
+          const permissionUrls = getUrlAll(oldPolicyThing, `${ODRL}permission`);
+          
+          permissionUrls.forEach(permUrl => {
+            const permThing = allThings.find(t => cleanIRI(t.url) === cleanIRI(permUrl));
+            
+            if (permThing) {
+              const constraintUrls = getUrlAll(permThing, `${ODRL}constraint`);
+              constraintUrls.forEach(cUrl => {
+                const cThing = allThings.find(t => cleanIRI(t.url) === cleanIRI(cUrl));
+                if (cThing) {
+                  dataset = removeThing(dataset, cThing.url);
+                }
+              });
+              dataset = removeThing(dataset, permThing.url);
             }
           });
-          dataset = removeThing(dataset, permThing);
-        });
 
-        // Remove old prohibitions
-        const oldProhibitions = getUrlAll(dataset, oldPolicyUrl).filter(t => 
-          getUrlAll(t, `${RDF}type`).some(type => type.includes('Prohibition'))
-        );
-        oldProhibitions.forEach(prohibThing => {
-          dataset = removeThing(dataset, prohibThing);
-        });
+          const prohibitionUrls = getUrlAll(oldPolicyThing, `${ODRL}prohibition`);
+          prohibitionUrls.forEach(prohibUrl => {
+            const prohibThing = allThings.find(t => cleanIRI(t.url) === cleanIRI(prohibUrl));
+            if (prohibThing) {
+              dataset = removeThing(dataset, prohibThing.url);
+            }
+          });
 
-        // Remove old policy
-        dataset = removeThing(dataset, oldPolicyUrl);
+          dataset = removeThing(dataset, oldPolicyUrl);
+        }
       }
 
       const policySubjectUrl = editingPolicy?.id || `${EX_BASE}policy-${policy.targetField.replace(/[^a-z0-9]/gi, '-')}-${Math.random().toString(36).slice(2, 10)}`;
@@ -1199,7 +1204,7 @@ export default function AuditDashboardPage() {
         policyThing = setUrl(policyThing, `${ODRL}assignee`, cleanIRI(policy.assignee));
       }
 
-      // Create ONE permission with ALL actions
+      // ✅ Create ONE permission with ALL actions and ALL constraints
       if (policy.actions?.length > 0) {
         const permissionUrl = `${policySubjectUrl}#permission`;
         const permissionThing = createThing({ url: permissionUrl });
@@ -1207,13 +1212,11 @@ export default function AuditDashboardPage() {
         setUrl(permissionThing, `${ODRL}assigner`, `${EX_BASE}pod-owner`);
         setUrl(permissionThing, `${ODRL}assignee`, policy.assignee ? cleanIRI(policy.assignee) : `${EX_BASE}any-app`);
 
-        // Add all actions to single permission
         policy.actions.forEach(actionShort => {
           const fullAction = actionToFullIri(actionShort);
           setUrl(permissionThing, `${ODRL}action`, fullAction);
         });
 
-        // Add ALL constraints to this permission (not per action)
         if (policy.constraints?.length > 0) {
           policy.constraints.forEach((constraint, cIdx) => {
             const constraintUrl = `${policySubjectUrl}#constraint-${cIdx}`;
