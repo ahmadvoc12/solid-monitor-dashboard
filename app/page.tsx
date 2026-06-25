@@ -17,12 +17,12 @@ import { useEffect, useMemo, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useSolidSession } from '@/contexts/SolidSessionContext';
 import {
-  getSolidDataset, getThingAll, getUrlAll, getDatetime, getPodUrlAll,
+  getSolidDataset, getThing, getThingAll, getUrlAll, getDatetime, getPodUrlAll,
   getStringNoLocaleAll, createThing, setUrl, setDatetime, setStringNoLocale,
   saveSolidDatasetAt, getBoolean, getInteger, createSolidDataset, setThing,
   setBoolean, setInteger, addUrl, removeThing,
 } from '@inrupt/solid-client';
-import type { SolidDataset } from '@inrupt/solid-client';
+import type { SolidDataset, Thing } from '@inrupt/solid-client';
 
 const DPV = 'https://w3id.org/dpv#';
 const DCT = 'http://purl.org/dc/terms/';
@@ -69,12 +69,43 @@ const ACTION_HIERARCHY: Record<string, string | null> = {
 };
 
 /* ======================================================
-   ✅ Normalize action IRI to short form (ex:read, ex:create, ex:update)
+   ✅ Helper: Find thing in dataset (handles blank nodes properly)
 ====================================================== */
+function findThingInDataset(dataset: SolidDataset, url: string): Thing | undefined {
+  // Try getThing first (most reliable)
+  try {
+    const thing = getThing(dataset, url);
+    if (thing) return thing;
+  } catch {}
+
+  // Fallback: search all things with flexible matching
+  const allThings = getThingAll(dataset);
+  const normalizedUrl = url.trim();
+
+  return allThings.find(t => {
+    const tUrl = t.url.trim();
+    // Exact match
+    if (tUrl === normalizedUrl) return true;
+    // Clean IRI match
+    if (cleanIRI(tUrl) === cleanIRI(normalizedUrl)) return true;
+    // Blank node match (compare without _: prefix and whitespace)
+    const tBlank = tUrl.replace(/^_:\s*/, '').replace(/\s+/g, '');
+    const uBlank = normalizedUrl.replace(/^_:\s*/, '').replace(/\s+/g, '');
+    if (tBlank && uBlank && tBlank === uBlank) return true;
+    // Suffix match for blank nodes
+    if (tUrl.includes('-') && normalizedUrl.includes('-')) {
+      const tSuffix = tUrl.split('-').slice(-2).join('-');
+      const uSuffix = normalizedUrl.split('-').slice(-2).join('-');
+      if (tSuffix === uSuffix) return true;
+    }
+    return false;
+  });
+}
+
 function normalizeAction(actionIri: string): string {
   const clean = cleanIRI(actionIri);
   if (!clean) return '';
-  
+
   if (clean === `${EX}read` || clean === 'ex:read' || clean.endsWith('/read') || clean.endsWith('#read')) {
     return 'ex:read';
   }
@@ -86,15 +117,12 @@ function normalizeAction(actionIri: string): string {
   }
   if (clean === `${ODRL}use`) return 'odrl:use';
   if (clean === `${ODRL}transfer`) return 'odrl:transfer';
-  
+
   const short = shortIri(clean);
   if (short.startsWith('ex:')) return short;
   return `ex:${short}`;
 }
 
-/* ======================================================
-   ✅ Convert short action form back to full IRI for storage
-====================================================== */
 function actionToFullIri(actionShort: string): string {
   if (actionShort === 'ex:read') return `${EX}read`;
   if (actionShort === 'ex:create') return `${EX}create`;
@@ -380,7 +408,7 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
       || getStringNoLocaleAll(thing, `${REPORT}accessMethod`)[0]
       || getStringNoLocaleAll(thing, `${ODRL}action`)[0]
       || 'read';
-    
+
     const accessedResource = cleanIRI(
       getUrlAll(thing, `${REPORT}accessedResource`)[0]
       || getUrlAll(thing, `${PROV}used`)[0]
@@ -396,13 +424,13 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
     const fields: AccessedField[] = [];
     const fieldsBundle = getUrlAll(thing, `${REPORT}hasFieldsBundle`)[0]
       ?? getUrlAll(thing, `${EX}hasFieldsBundle`)[0];
-    
+
     if (fieldsBundle) {
       getThingAll(dataset).forEach((fieldThing: any) => {
         const fieldTypes = getUrlAll(fieldThing, `${RDF}type`);
         const isAccessedField = fieldTypes.some((t: string) => t.includes('AccessedDataField'));
         if (!isAccessedField) return;
-        
+
         const belongsToBundle = getUrlAll(fieldThing, `${REPORT}belongsToBundle`)[0]
           ?? getUrlAll(fieldThing, `${EX}belongsToBundle`)[0];
         if (!bundlesMatch(belongsToBundle, fieldsBundle)) return;
@@ -410,24 +438,24 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
         const rawIri = getFirstValue(getUrlAll(fieldThing, `${REPORT}fieldIRI`))
           || getFirstValue(getUrlAll(fieldThing, `${EX}fieldIRI`))
           || '';
-        
+
         const fieldNameFromRdf = getFirstValue(getStringNoLocaleAll(fieldThing, `${REPORT}fieldName`))
           || getFirstValue(getStringNoLocaleAll(fieldThing, `${EX}fieldName`))
           || '';
-        
+
         const fieldValue = getFirstValue(getStringNoLocaleAll(fieldThing, `${REPORT}fieldValue`))
           || getFirstValue(getStringNoLocaleAll(fieldThing, `${EX}fieldValue`))
           || '';
-        
+
         const isSensitiveStr = getFirstValue(getStringNoLocaleAll(fieldThing, `${REPORT}isSensitive`))
           || getFirstValue(getStringNoLocaleAll(fieldThing, `${EX}isSensitive`))
           || 'false';
         const isSensitive = isSensitiveStr.toLowerCase() === 'true';
-        
+
         const dataCategoryRaw = getFirstValue(getUrlAll(fieldThing, `${REPORT}dataCategory`))
           || getFirstValue(getUrlAll(fieldThing, `${EX}dataCategory`))
           || `${DPV}PersonalData`;
-        
+
         const personalDataTypeRaw = getFirstValue(getUrlAll(fieldThing, `${REPORT}personalDataType`))
           || getFirstValue(getUrlAll(fieldThing, `${EX}personalDataType`))
           || `${DPV}Data`;
@@ -472,7 +500,7 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
         getThingAll(dataset).forEach((violThing: any) => {
           const violTypes = getUrlAll(violThing, `${RDF}type`);
           if (!violTypes.some((t: string) => t.includes('PolicyViolation'))) return;
-          
+
           const belongsToVBundle = getUrlAll(violThing, `${REPORT}belongsToBundle`)[0];
           if (!bundlesMatch(belongsToVBundle, violationBundle)) return;
 
@@ -484,7 +512,7 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
 
           const fieldViolationUrls = getUrlAll(violThing, `${REPORT}hasFieldViolation`);
           fieldViolationUrls.forEach(fvUrl => {
-            const fvThing = getThingAll(dataset).find((t: any) => 
+            const fvThing = getThingAll(dataset).find((t: any) =>
               cleanIRI(t.url) === cleanIRI(fvUrl)
             );
             if (!fvThing) return;
@@ -650,7 +678,7 @@ async function createPrivacyMappingFileDirectly(
 ): Promise<boolean> {
   const mappingUrl = `${podBaseUrl}${PRIVACY_MAPPING_PATH}`;
   const parentUrl = mappingUrl.substring(0, mappingUrl.lastIndexOf('/') + 1);
-  
+
   try {
     await fetchFn(parentUrl, { method: 'HEAD' });
   } catch {
@@ -666,7 +694,7 @@ async function createPrivacyMappingFileDirectly(
       });
     } catch {}
   }
-  
+
   const content = initialContent || `@prefix ex: <https://example.org/privacy#> .
 @prefix dpv: <https://w3id.org/dpv#> .
 @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
@@ -676,7 +704,7 @@ async function createPrivacyMappingFileDirectly(
 @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 
 `;
-  
+
   try {
     const res = await fetchFn(mappingUrl, {
       method: 'PUT',
@@ -699,7 +727,7 @@ async function savePrivacyMappingsDirectly(
   mappings: PrivacyMapping[]
 ): Promise<boolean> {
   const mappingUrl = `${podBaseUrl}${PRIVACY_MAPPING_PATH}`;
-  
+
   let content = `@prefix ex: <https://example.org/privacy#> .
 @prefix dpv: <https://w3id.org/dpv#> .
 @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
@@ -709,13 +737,13 @@ async function savePrivacyMappingsDirectly(
 @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 
 `;
-  
+
   mappings.forEach(mapping => {
     const shortName = schemaToExShort(mapping.fieldIri);
     const subjectUrl = `ex:${shortName}`;
     const dataCatIri = cleanIRI(mapping.dataCategory);
     const pdtIri = cleanIRI(mapping.personalDataType);
-    
+
     content += `${subjectUrl} a dpv:PersonalData ;
     skos:prefLabel "${mapping.fieldLabel}" ;
     dpv:hasPersonalData <${pdtIri}> ;
@@ -728,7 +756,7 @@ async function savePrivacyMappingsDirectly(
     content += `
 `;
   });
-  
+
   try {
     const res = await fetchFn(mappingUrl, {
       method: 'PUT',
@@ -907,8 +935,9 @@ export default function AuditDashboardPage() {
   useEffect(() => { loadStateOfTheWorld(); }, [session]);
 
   /* ======================================================
-     ✅ FIXED: loadPolicies - normalize actions & parse all constraint types
-     ✅ NO default count constraint fallback
+     ✅ FIXED: loadPolicies - properly handles blank nodes & typed literals
+     ✅ Uses findThingInDataset for flexible blank node matching
+     ✅ Uses getDatetime for xsd:dateTime literals
 ====================================================== */
   const loadPolicies = async () => {
     if (!session?.info?.webId) return;
@@ -919,7 +948,10 @@ export default function AuditDashboardPage() {
       const dataset = await getSolidDataset(policyUrl, { fetch: session.fetch });
       const parsed: Policy[] = [];
 
-      getThingAll(dataset).forEach((thing: any) => {
+      // ✅ Get all things ONCE for efficient lookup
+      const allThings = getThingAll(dataset);
+
+      allThings.forEach((thing: any) => {
         const types = getUrlAll(thing, `${RDF}type`);
         if (!types.some((t: string) => t.includes('Policy'))) return;
 
@@ -937,10 +969,10 @@ export default function AuditDashboardPage() {
 
         const permissions = getUrlAll(thing, `${ODRL}permission`);
         permissions.forEach((permUrl: string) => {
-          const permThing = getThingAll(dataset).find((t: any) => 
-            t.url === permUrl || cleanIRI(t.url) === cleanIRI(permUrl)
-          );
+          // ✅ Use findThingInDataset for flexible blank node matching
+          const permThing = findThingInDataset(dataset, permUrl);
           if (permThing) {
+            // Normalize action to short form
             const actionUrls = getUrlAll(permThing, `${ODRL}action`);
             actionUrls.forEach((action: string) => {
               const normalized = normalizeAction(action);
@@ -949,48 +981,67 @@ export default function AuditDashboardPage() {
               }
             });
 
+            // ✅ Parse ALL constraint types with proper blank node handling
             const constraintUrls = getUrlAll(permThing, `${ODRL}constraint`);
             constraintUrls.forEach((cUrl: string) => {
-              const cThing = getThingAll(dataset).find((t: any) => 
-                t.url === cUrl || cleanIRI(t.url) === cleanIRI(cUrl)
-              );
-              if (!cThing) return;
+              // ✅ Use findThingInDataset for flexible blank node matching
+              const cThing = findThingInDataset(dataset, cUrl);
+              if (!cThing) {
+                console.warn(`⚠️ Constraint thing not found for URL: ${cUrl}`);
+                return;
+              }
 
               const leftOperand = cleanIRI(getUrlAll(cThing, `${ODRL}leftOperand`)[0] || '');
               const op = cleanIRI(getUrlAll(cThing, `${ODRL}operator`)[0] || '');
+
+              // ✅ Get rightOperand in multiple formats to handle typed literals
               const rightOperandStr = getStringNoLocaleAll(cThing, `${ODRL}rightOperand`)[0];
               const rightOperandInt = getInteger(cThing, `${ODRL}rightOperand`);
               const rightOperandIri = getUrlAll(cThing, `${ODRL}rightOperand`)[0];
+              // ✅ CRITICAL FIX: Use getDatetime for xsd:dateTime literals
+              const rightOperandDatetime = getDatetime(cThing, `${ODRL}rightOperand`);
 
               let constraint: PolicyConstraint | null = null;
 
+              // Count constraint
               if (leftOperand.includes('count')) {
                 constraint = {
                   type: 'count',
                   operator: (op.includes('lteq') ? 'lteq' : op.includes('gteq') ? 'gteq' : 'eq') as ConstraintOperator,
                   value: rightOperandInt ?? 0,
                 };
-              } else if (leftOperand.includes('assignee') || leftOperand.includes('recipient')) {
+              }
+              // Recipient/Assignee constraint
+              else if (leftOperand.includes('assignee') || leftOperand.includes('recipient')) {
                 const recipientValue = rightOperandIri || rightOperandStr || '';
                 constraint = {
                   type: 'recipient',
                   operator: 'eq' as ConstraintOperator,
                   value: cleanIRI(recipientValue),
                 };
-              } else if (leftOperand.includes('dateTime') || leftOperand.includes('date')) {
-                const dateValue = rightOperandStr || '';
+              }
+              // Temporal/DateTime constraint
+              else if (leftOperand.includes('dateTime') || leftOperand.includes('date')) {
+                // ✅ CRITICAL FIX: Use getDatetime result for xsd:dateTime
+                const dateValue = rightOperandDatetime
+                  ? rightOperandDatetime.toISOString()
+                  : (rightOperandStr || '');
                 constraint = {
                   type: 'temporal',
                   operator: (op.includes('lteq') ? 'lteq' : op.includes('gteq') ? 'gteq' : 'eq') as ConstraintOperator,
                   value: dateValue,
                 };
-              } else if (leftOperand.includes('spatial')) {
+              }
+              // Location/Spatial constraint
+              else if (leftOperand.includes('spatial')) {
                 constraint = {
                   type: 'location',
                   operator: 'eq' as ConstraintOperator,
                   value: rightOperandStr || '',
                 };
-              } else if (leftOperand.includes('timeWindow')) {
+              }
+              // TimeWindow constraint
+              else if (leftOperand.includes('timeWindow')) {
                 constraint = {
                   type: 'timeWindow',
                   operator: (op.includes('lteq') ? 'lteq' : op.includes('gteq') ? 'gteq' : 'eq') as ConstraintOperator,
@@ -1000,16 +1051,19 @@ export default function AuditDashboardPage() {
 
               if (constraint) {
                 constraints.push(constraint);
+                console.log(`✅ Parsed constraint:`, constraint);
+              } else {
+                console.warn(`⚠️ Unknown constraint type for leftOperand: ${leftOperand}`);
               }
             });
+          } else {
+            console.warn(`⚠️ Permission thing not found for URL: ${permUrl}`);
           }
         });
 
         const prohibitionUrls = getUrlAll(thing, `${ODRL}prohibition`);
         prohibitionUrls.forEach((prohibUrl: string) => {
-          const prohibThing = getThingAll(dataset).find((t: any) => 
-            t.url === prohibUrl || cleanIRI(t.url) === cleanIRI(prohibUrl)
-          );
+          const prohibThing = findThingInDataset(dataset, prohibUrl);
           if (prohibThing) {
             const actionUrls = getUrlAll(prohibThing, `${ODRL}action`);
             actionUrls.forEach((action: string) => {
@@ -1021,7 +1075,10 @@ export default function AuditDashboardPage() {
 
         if (actions.length === 0) actions.push('ex:read');
 
-        console.log(`📋 Policy "${title}" parsed:`, { actions, constraints });
+        console.log(`📋 Policy "${title}" parsed:`, {
+          actions,
+          constraints: constraints.map(c => ({ type: c.type, value: c.value })),
+        });
 
         parsed.push({
           id: thing.url,
@@ -1127,10 +1184,6 @@ export default function AuditDashboardPage() {
 
   useEffect(() => { loadPrivacyMappings(); }, [session]);
 
-  /* ======================================================
-     ✅ FIXED: savePolicy - proper cleanup & single permission structure
-     ✅ TypeScript-safe implementation
-====================================================== */
   const savePolicy = async (policy: Policy) => {
     if (!session?.info?.webId) return;
     try {
@@ -1144,23 +1197,23 @@ export default function AuditDashboardPage() {
         dataset = createSolidDataset();
       }
 
-      // ✅ FIXED: Remove old policy and all related things properly (TypeScript-safe)
+      // ✅ Remove old policy and all related things properly
       if (editingPolicy) {
         const oldPolicyUrl = editingPolicy.id;
         const allThings = getThingAll(dataset);
-        
+
         const oldPolicyThing = allThings.find(t => cleanIRI(t.url) === cleanIRI(oldPolicyUrl));
-        
+
         if (oldPolicyThing) {
           const permissionUrls = getUrlAll(oldPolicyThing, `${ODRL}permission`);
-          
+
           permissionUrls.forEach(permUrl => {
-            const permThing = allThings.find(t => cleanIRI(t.url) === cleanIRI(permUrl));
-            
+            const permThing = findThingInDataset(dataset, permUrl);
+
             if (permThing) {
               const constraintUrls = getUrlAll(permThing, `${ODRL}constraint`);
               constraintUrls.forEach(cUrl => {
-                const cThing = allThings.find(t => cleanIRI(t.url) === cleanIRI(cUrl));
+                const cThing = findThingInDataset(dataset, cUrl);
                 if (cThing) {
                   dataset = removeThing(dataset, cThing.url);
                 }
@@ -1171,7 +1224,7 @@ export default function AuditDashboardPage() {
 
           const prohibitionUrls = getUrlAll(oldPolicyThing, `${ODRL}prohibition`);
           prohibitionUrls.forEach(prohibUrl => {
-            const prohibThing = allThings.find(t => cleanIRI(t.url) === cleanIRI(prohibUrl));
+            const prohibThing = findThingInDataset(dataset, prohibUrl);
             if (prohibThing) {
               dataset = removeThing(dataset, prohibThing.url);
             }
@@ -1204,7 +1257,7 @@ export default function AuditDashboardPage() {
         policyThing = setUrl(policyThing, `${ODRL}assignee`, cleanIRI(policy.assignee));
       }
 
-      // ✅ Create ONE permission with ALL actions and ALL constraints
+      // Create ONE permission with ALL actions and ALL constraints
       if (policy.actions?.length > 0) {
         const permissionUrl = `${policySubjectUrl}#permission`;
         const permissionThing = createThing({ url: permissionUrl });
@@ -1313,9 +1366,9 @@ export default function AuditDashboardPage() {
     try {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
       const podBaseUrl = podUrls[0];
-      
+
       const success = await savePrivacyMappingsDirectly(podBaseUrl, session.fetch, privacyMappings);
-      
+
       if (success) {
         toast({ title: 'Success', description: 'Privacy settings saved', status: 'success' });
         await loadPrivacyMappings();
@@ -1448,8 +1501,8 @@ export default function AuditDashboardPage() {
   const handleEditPolicy = (policy: Policy) => {
     setEditingPolicy(policy);
     const normalizedActions = policy.actions.map(a => normalizeAction(a));
-    setNewPolicy({ 
-      ...policy, 
+    setNewPolicy({
+      ...policy,
       actions: normalizedActions.length > 0 ? normalizedActions : ['ex:read'],
       constraints: policy.constraints.length > 0 ? [...policy.constraints] : []
     });
@@ -1590,6 +1643,7 @@ export default function AuditDashboardPage() {
             <Tab>Violation Summary (Per App)</Tab>
             <Tab>All Access Logs</Tab>
             <Tab>State of the World</Tab>
+            <Tab>Policies & Constraints</Tab>
           </TabList>
           <TabPanels>
             <TabPanel>
@@ -1759,6 +1813,133 @@ export default function AuditDashboardPage() {
                       </Table>
                     </VStack>
                   ) : <Alert status="warning"><AlertIcon />No SOTW data available.</Alert>}
+                </CardBody>
+              </Card>
+            </TabPanel>
+
+            {/* ✅ NEW TAB: Policies & Constraints - Displayed in main dashboard */}
+            <TabPanel>
+              <Card>
+                <CardHeader>
+                  <Flex justify="space-between" align="center">
+                    <VStack align="start" spacing={1}>
+                      <Text fontWeight="bold">Active Policies & Constraints</Text>
+                      <Text fontSize="sm" color="gray.500">
+                        Showing {policies.length} policies with their constraints
+                      </Text>
+                    </VStack>
+                    <HStack>
+                      <Button size="sm" leftIcon={<RepeatIcon />} onClick={loadPolicies} isLoading={loadingPolicies}>Refresh</Button>
+                      <Button size="sm" colorScheme="blue" leftIcon={<AddIcon />} onClick={handleAddPolicy}>Add Policy</Button>
+                    </HStack>
+                  </Flex>
+                </CardHeader>
+                <CardBody>
+                  {loadingPolicies ? (
+                    <Flex justify="center" py={10}><Spinner /></Flex>
+                  ) : policies.length === 0 ? (
+                    <Alert status="info"><AlertIcon />No policies found. Create one to start monitoring.</Alert>
+                  ) : (
+                    <Table variant="simple" size="sm">
+                      <Thead>
+                        <Tr>
+                          <Th>Policy</Th>
+                          <Th>Target Field</Th>
+                          <Th>Actions</Th>
+                          <Th>Constraints</Th>
+                          <Th>Assignee</Th>
+                          <Th>Status</Th>
+                          <Th>Actions</Th>
+                        </Tr>
+                      </Thead>
+                      <Tbody>
+                        {policies.map((policy) => (
+                          <Tr key={policy.id} _hover={{ bg: 'gray.50' }}>
+                            <Td>
+                              <VStack align="start" spacing={1}>
+                                <Text fontWeight="medium" fontSize="sm">{policy.title}</Text>
+                                {policy.description && (
+                                  <Text fontSize="xs" color="gray.500" noOfLines={2}>{policy.description}</Text>
+                                )}
+                                {policy.identifier && (
+                                  <Code fontSize="2xs" colorScheme="gray">{shortIri(policy.identifier)}</Code>
+                                )}
+                              </VStack>
+                            </Td>
+                            <Td>
+                              <Tag size="sm" colorScheme="purple">{policy.targetField}</Tag>
+                            </Td>
+                            <Td>
+                              <HStack spacing={1} wrap="wrap">
+                                {policy.actions.map((action, idx) => (
+                                  <Tag key={idx} size="sm" colorScheme="blue" variant="subtle">
+                                    {shortIri(action)}
+                                  </Tag>
+                                ))}
+                              </HStack>
+                            </Td>
+                            <Td>
+                              <VStack align="start" spacing={1}>
+                                {policy.constraints.length === 0 ? (
+                                  <Text fontSize="xs" color="gray.400" fontStyle="italic">No constraints</Text>
+                                ) : (
+                                  policy.constraints.map((c, idx) => {
+                                    const colorScheme =
+                                      c.type === 'count' ? 'green' :
+                                      c.type === 'recipient' ? 'orange' :
+                                      c.type === 'temporal' ? 'blue' :
+                                      c.type === 'timeWindow' ? 'purple' :
+                                      c.type === 'location' ? 'teal' : 'gray';
+                                    return (
+                                      <Tooltip key={idx} label={formatConstraint(c)} hasArrow>
+                                        <Tag size="sm" colorScheme={colorScheme} variant="subtle">
+                                          {formatConstraint(c)}
+                                        </Tag>
+                                      </Tooltip>
+                                    );
+                                  })
+                                )}
+                              </VStack>
+                            </Td>
+                            <Td>
+                              {policy.assignee ? (
+                                <Tooltip label={policy.assignee}>
+                                  <Tag size="sm" colorScheme="cyan" variant="subtle">
+                                    {shortIri(policy.assignee)}
+                                  </Tag>
+                                </Tooltip>
+                              ) : (
+                                <Text fontSize="xs" color="gray.400">Any App</Text>
+                              )}
+                            </Td>
+                            <Td>
+                              <Badge colorScheme={policy.active ? 'green' : 'gray'}>
+                                {policy.active ? 'Active' : 'Inactive'}
+                              </Badge>
+                            </Td>
+                            <Td>
+                              <HStack spacing={1}>
+                                <IconButton
+                                  size="xs"
+                                  icon={<EditIcon />}
+                                  aria-label="Edit"
+                                  onClick={() => handleEditPolicy(policy)}
+                                />
+                                <IconButton
+                                  size="xs"
+                                  icon={<DeleteIcon />}
+                                  aria-label="Delete"
+                                  colorScheme="red"
+                                  variant="ghost"
+                                  onClick={() => deletePolicy(policy)}
+                                />
+                              </HStack>
+                            </Td>
+                          </Tr>
+                        ))}
+                      </Tbody>
+                    </Table>
+                  )}
                 </CardBody>
               </Card>
             </TabPanel>
@@ -2133,68 +2314,6 @@ export default function AuditDashboardPage() {
                 </AccordionPanel>
               </AccordionItem>
             </Accordion>
-
-            <Box mt={6}>
-              <Text fontWeight="bold" mb={3}>Existing Policies</Text>
-              {loadingPolicies ? <Spinner /> : (
-                <Table variant="simple" size="sm">
-                  <Thead>
-                    <Tr>
-                      <Th>Policy</Th>
-                      <Th>Identifier</Th>
-                      <Th>Target</Th>
-                      <Th>Recipient</Th>
-                      <Th>Constraints</Th>
-                      <Th>Status</Th>
-                      <Th>Actions</Th>
-                    </Tr>
-                  </Thead>
-                  <Tbody>
-                    {policies.map((policy) => (
-                      <Tr key={policy.id}>
-                        <Td>
-                          <Text fontWeight="medium">{policy.title}</Text>
-                          <Text fontSize="xs" color="gray.600">{policy.description}</Text>
-                        </Td>
-                        <Td>{policy.identifier ? <Code fontSize="xs">{policy.identifier}</Code> : <Text fontSize="xs" color="gray.400">N/A</Text>}</Td>
-                        <Td><Tag size="sm" colorScheme="purple">{policy.targetField}</Tag></Td>
-                        <Td>
-                          {policy.assignee ? (
-                            <Tooltip label={policy.assignee}>
-                              <Tag size="sm" colorScheme="blue">{shortIri(policy.assignee)}</Tag>
-                            </Tooltip>
-                          ) : (
-                            <Text fontSize="xs" color="gray.400">Any App</Text>
-                          )}
-                        </Td>
-                        <Td>
-                          <VStack align="start" spacing={1}>
-                            {policy.constraints.length === 0 ? (
-                              <Text fontSize="xs" color="gray.400" fontStyle="italic">No constraints</Text>
-                            ) : (
-                              policy.constraints.map((c, idx) => (
-                                <Tag key={`${policy.id}-c-${idx}`} size="sm" colorScheme="gray" variant="subtle">
-                                  {formatConstraint(c)}
-                                </Tag>
-                              ))
-                            )}
-                          </VStack>
-                        </Td>
-                        <Td>
-                          <Switch size="sm" isChecked={policy.active} onChange={() => handleTogglePolicyActive(policy)} />
-                        </Td>
-                        <Td>
-                          <HStack spacing={2}>
-                            <IconButton size="sm" icon={<EditIcon />} aria-label="Edit" onClick={() => handleEditPolicy(policy)} />
-                            <IconButton size="sm" icon={<DeleteIcon />} aria-label="Delete" colorScheme="red" variant="ghost" onClick={() => deletePolicy(policy)} />
-                          </HStack>
-                        </Td>
-                      </Tr>
-                    ))}
-                  </Tbody>
-                </Table>
-              )}
-            </Box>
           </ModalBody>
           <ModalFooter borderTop="1px solid" borderColor="gray.200">
             <Button variant="ghost" onClick={onPolicyModalClose}>Close</Button>
