@@ -26,7 +26,7 @@ import type { SolidDataset } from '@inrupt/solid-client';
 
 const DPV = 'https://w3id.org/dpv#';
 const DCT = 'http://purl.org/dc/terms/';
-const EX = 'https://example.org/privacy#';
+const EX = 'https://example.org/';
 const EX_BASE = 'https://example.org/';
 const ODRL = 'http://www.w3.org/ns/odrl/2/';
 const XSD = 'http://www.w3.org/2001/XMLSchema#';
@@ -67,6 +67,46 @@ const ACTION_HIERARCHY: Record<string, string | null> = {
   [`${ODRL}use`]: null,
   [`${ODRL}transfer`]: null,
 };
+
+/* ======================================================
+   ✅ NEW: Normalize action IRI to short form (ex:read, ex:create, ex:update)
+   This ensures consistency between UI and storage
+====================================================== */
+function normalizeAction(actionIri: string): string {
+  const clean = cleanIRI(actionIri);
+  if (!clean) return '';
+  
+  // Map full IRI to short form
+  if (clean === `${EX}read` || clean === 'ex:read' || clean.endsWith('/read') || clean.endsWith('#read')) {
+    return 'ex:read';
+  }
+  if (clean === `${EX}create` || clean === 'ex:create' || clean.endsWith('/create') || clean.endsWith('#create')) {
+    return 'ex:create';
+  }
+  if (clean === `${EX}update` || clean === 'ex:update' || clean.endsWith('/update') || clean.endsWith('#update')) {
+    return 'ex:update';
+  }
+  if (clean === `${ODRL}use`) return 'odrl:use';
+  if (clean === `${ODRL}transfer`) return 'odrl:transfer';
+  
+  // Fallback: keep short version
+  const short = shortIri(clean);
+  if (short.startsWith('ex:')) return short;
+  return `ex:${short}`;
+}
+
+/* ======================================================
+   ✅ NEW: Convert short action form back to full IRI for storage
+====================================================== */
+function actionToFullIri(actionShort: string): string {
+  if (actionShort === 'ex:read') return `${EX}read`;
+  if (actionShort === 'ex:create') return `${EX}create`;
+  if (actionShort === 'ex:update') return `${EX}update`;
+  if (actionShort === 'odrl:use') return `${ODRL}use`;
+  if (actionShort === 'odrl:transfer') return `${ODRL}transfer`;
+  // Assume it's already a full IRI
+  return resolvePrefixedIri(actionShort);
+}
 
 function actionIncludedIn(actionA: string, actionB: string): boolean {
   let current = cleanIRI(actionA);
@@ -607,10 +647,6 @@ function parsePrivacyMapping(thing: any): PrivacyMapping | null {
   }
 }
 
-/* ======================================================
-   ✅ FIXED: Helper to create privacy mapping TTL file directly
-   This avoids the "Undefined prefix" error from @inrupt/solid-client
-====================================================== */
 async function createPrivacyMappingFileDirectly(
   podBaseUrl: string,
   fetchFn: typeof fetch,
@@ -874,6 +910,9 @@ export default function AuditDashboardPage() {
 
   useEffect(() => { loadStateOfTheWorld(); }, [session]);
 
+  /* ======================================================
+     ✅ FIXED: loadPolicies - normalize actions & parse all constraint types
+====================================================== */
   const loadPolicies = async () => {
     if (!session?.info?.webId) return;
     setLoadingPolicies(true);
@@ -901,50 +940,80 @@ export default function AuditDashboardPage() {
 
         const permissions = getUrlAll(thing, `${ODRL}permission`);
         permissions.forEach((permUrl: string) => {
-          const permThing = getThingAll(dataset).find((t: any) => t.url === permUrl);
+          const permThing = getThingAll(dataset).find((t: any) => 
+            t.url === permUrl || cleanIRI(t.url) === cleanIRI(permUrl)
+          );
           if (permThing) {
+            // ✅ FIXED: Normalize action to short form (ex:read, ex:create, ex:update)
             const actionUrls = getUrlAll(permThing, `${ODRL}action`);
             actionUrls.forEach((action: string) => {
-              const cleanAction = cleanIRI(action);
-              if (!actions.includes(cleanAction)) actions.push(cleanAction);
+              const normalized = normalizeAction(action);
+              if (normalized && !actions.includes(normalized)) {
+                actions.push(normalized);
+              }
             });
 
+            // ✅ FIXED: Parse ALL constraint types properly
             const constraintUrls = getUrlAll(permThing, `${ODRL}constraint`);
             constraintUrls.forEach((cUrl: string) => {
-              const cThing = getThingAll(dataset).find((t: any) => t.url === cUrl);
-              if (cThing) {
-                const leftOperand = cleanIRI(getUrlAll(cThing, `${ODRL}leftOperand`)[0] || '');
-                const op = cleanIRI(getUrlAll(cThing, `${ODRL}operator`)[0] || '');
-                const rightOperandStr = getStringNoLocaleAll(cThing, `${ODRL}rightOperand`)[0];
-                const rightOperandInt = getInteger(cThing, `${ODRL}rightOperand`);
+              const cThing = getThingAll(dataset).find((t: any) => 
+                t.url === cUrl || cleanIRI(t.url) === cleanIRI(cUrl)
+              );
+              if (!cThing) return;
 
-                if (leftOperand.includes('count')) {
-                  constraints.push({
-                    type: 'count',
-                    operator: (op.includes('lteq') ? 'lteq' : op.includes('gteq') ? 'gteq' : 'eq') as ConstraintOperator,
-                    value: rightOperandInt ?? 0,
-                  });
-                } else if (leftOperand.includes('assignee') || leftOperand.includes('recipient')) {
-                  const recipientValue = rightOperandStr || getUrlAll(cThing, `${ODRL}rightOperand`)[0] || '';
-                  constraints.push({
-                    type: 'recipient',
-                    operator: 'eq' as ConstraintOperator,
-                    value: cleanIRI(recipientValue),
-                  });
-                } else if (leftOperand.includes('dateTime') || leftOperand.includes('date')) {
-                  const dateValue = rightOperandStr || '';
-                  constraints.push({
-                    type: 'temporal',
-                    operator: (op.includes('lteq') ? 'lteq' : op.includes('gteq') ? 'gteq' : 'eq') as ConstraintOperator,
-                    value: dateValue,
-                  });
-                } else if (leftOperand.includes('spatial')) {
-                  constraints.push({
-                    type: 'location',
-                    operator: 'eq' as ConstraintOperator,
-                    value: rightOperandStr || '',
-                  });
-                }
+              const leftOperand = cleanIRI(getUrlAll(cThing, `${ODRL}leftOperand`)[0] || '');
+              const op = cleanIRI(getUrlAll(cThing, `${ODRL}operator`)[0] || '');
+              const rightOperandStr = getStringNoLocaleAll(cThing, `${ODRL}rightOperand`)[0];
+              const rightOperandInt = getInteger(cThing, `${ODRL}rightOperand`);
+              const rightOperandIri = getUrlAll(cThing, `${ODRL}rightOperand`)[0];
+
+              let constraint: PolicyConstraint | null = null;
+
+              // Count constraint
+              if (leftOperand.includes('count')) {
+                constraint = {
+                  type: 'count',
+                  operator: (op.includes('lteq') ? 'lteq' : op.includes('gteq') ? 'gteq' : 'eq') as ConstraintOperator,
+                  value: rightOperandInt ?? 0,
+                };
+              }
+              // Recipient/Assignee constraint
+              else if (leftOperand.includes('assignee') || leftOperand.includes('recipient')) {
+                const recipientValue = rightOperandIri || rightOperandStr || '';
+                constraint = {
+                  type: 'recipient',
+                  operator: 'eq' as ConstraintOperator,
+                  value: cleanIRI(recipientValue),
+                };
+              }
+              // Temporal/DateTime constraint
+              else if (leftOperand.includes('dateTime') || leftOperand.includes('date')) {
+                const dateValue = rightOperandStr || '';
+                constraint = {
+                  type: 'temporal',
+                  operator: (op.includes('lteq') ? 'lteq' : op.includes('gteq') ? 'gteq' : 'eq') as ConstraintOperator,
+                  value: dateValue,
+                };
+              }
+              // Location/Spatial constraint
+              else if (leftOperand.includes('spatial')) {
+                constraint = {
+                  type: 'location',
+                  operator: 'eq' as ConstraintOperator,
+                  value: rightOperandStr || '',
+                };
+              }
+              // TimeWindow constraint
+              else if (leftOperand.includes('timeWindow')) {
+                constraint = {
+                  type: 'timeWindow',
+                  operator: (op.includes('lteq') ? 'lteq' : op.includes('gteq') ? 'gteq' : 'eq') as ConstraintOperator,
+                  value: rightOperandInt ?? 24,
+                };
+              }
+
+              if (constraint) {
+                constraints.push(constraint);
               }
             });
           }
@@ -952,7 +1021,9 @@ export default function AuditDashboardPage() {
 
         const prohibitionUrls = getUrlAll(thing, `${ODRL}prohibition`);
         prohibitionUrls.forEach((prohibUrl: string) => {
-          const prohibThing = getThingAll(dataset).find((t: any) => t.url === prohibUrl);
+          const prohibThing = getThingAll(dataset).find((t: any) => 
+            t.url === prohibUrl || cleanIRI(t.url) === cleanIRI(prohibUrl)
+          );
           if (prohibThing) {
             const actionUrls = getUrlAll(prohibThing, `${ODRL}action`);
             actionUrls.forEach((action: string) => {
@@ -962,10 +1033,13 @@ export default function AuditDashboardPage() {
           }
         });
 
-        if (actions.length === 0) actions.push(`${EX}read`);
+        // Default fallback
+        if (actions.length === 0) actions.push('ex:read');
         if (constraints.length === 0) {
           constraints.push(createDefaultConstraint('count'));
         }
+
+        console.log(`📋 Policy "${title}" parsed:`, { actions, constraints });
 
         parsed.push({
           id: thing.url,
@@ -1006,9 +1080,6 @@ export default function AuditDashboardPage() {
 
   useEffect(() => { loadPolicies(); }, [session]);
 
-  /* ======================================================
-     ✅ FIXED: loadPrivacyMappings - with fallback for missing file
-  ====================================================== */
   const loadPrivacyMappings = async () => {
     if (!session?.info?.webId) return;
     setLoadingPrivacy(true);
@@ -1086,6 +1157,9 @@ export default function AuditDashboardPage() {
 
   useEffect(() => { loadPrivacyMappings(); }, [session]);
 
+  /* ======================================================
+     ✅ FIXED: savePolicy - convert short actions back to full IRI
+====================================================== */
   const savePolicy = async (policy: Policy) => {
     if (!session?.info?.webId) return;
     try {
@@ -1125,13 +1199,17 @@ export default function AuditDashboardPage() {
       }
 
       if (policy.constraints?.length > 0 && policy.actions?.length > 0) {
-        policy.actions.forEach((action, idx) => {
+        // ✅ FIXED: Convert short actions to full IRI before saving
+        const fullActionIris = (policy.actions || []).map(action => actionToFullIri(action));
+        
+        policy.actions.forEach((actionShort, idx) => {
+          const fullAction = actionToFullIri(actionShort);
           const permissionUrl = `${policySubjectUrl}#permission-${idx}`;
           const permissionThing = createThing({ url: permissionUrl });
 
           setUrl(permissionThing, `${ODRL}assigner`, `${EX_BASE}pod-owner`);
           setUrl(permissionThing, `${ODRL}assignee`, policy.assignee ? cleanIRI(policy.assignee) : `${EX_BASE}any-app`);
-          setUrl(permissionThing, `${ODRL}action`, action);
+          setUrl(permissionThing, `${ODRL}action`, fullAction);
 
           policy.constraints.forEach((constraint, cIdx) => {
             const constraintUrl = `${policySubjectUrl}#constraint-${idx}-${cIdx}`;
@@ -1226,10 +1304,6 @@ export default function AuditDashboardPage() {
     }
   };
 
-  /* ======================================================
-     ✅ FIXED: savePrivacyMappings - use direct TTL write
-     This avoids the "Undefined prefix schema:" error
-  ====================================================== */
   const savePrivacyMappings = async () => {
     if (!session?.info?.webId) return;
     try {
@@ -1369,7 +1443,13 @@ export default function AuditDashboardPage() {
 
   const handleEditPolicy = (policy: Policy) => {
     setEditingPolicy(policy);
-    setNewPolicy({ ...policy });
+    // ✅ FIXED: Ensure actions are in short form when editing
+    const normalizedActions = policy.actions.map(a => normalizeAction(a));
+    setNewPolicy({ 
+      ...policy, 
+      actions: normalizedActions.length > 0 ? normalizedActions : ['ex:read'],
+      constraints: policy.constraints.length > 0 ? policy.constraints : [createDefaultConstraint('count')]
+    });
     onPolicyModalOpen();
   };
 
@@ -1844,12 +1924,13 @@ export default function AuditDashboardPage() {
                       </FormHelperText>
                     </FormControl>
 
+                    {/* ✅ FIXED: Allowed Actions - use consistent short form keys */}
                     <FormControl>
                       <FormLabel>Allowed Actions</FormLabel>
                       <HStack spacing={2} wrap="wrap">
                         {['read', 'create', 'update'].map((action) => {
-                          const actionIri = `ex:${action}`;
-                          const isSelected = newPolicy.actions?.includes(actionIri);
+                          const actionKey = `ex:${action}`; // Consistent key format
+                          const isSelected = newPolicy.actions?.includes(actionKey) || false;
                           return (
                             <Tag
                               key={action}
@@ -1858,12 +1939,14 @@ export default function AuditDashboardPage() {
                               colorScheme="blue"
                               cursor="pointer"
                               onClick={() => {
-                                setNewPolicy((p) => ({
-                                  ...p,
-                                  actions: isSelected
-                                    ? p.actions?.filter(a => a !== actionIri) || []
-                                    : [...(p.actions || []), actionIri]
-                                }));
+                                setNewPolicy((p) => {
+                                  const currentActions = p.actions || [];
+                                  if (isSelected) {
+                                    return { ...p, actions: currentActions.filter(a => a !== actionKey) };
+                                  } else {
+                                    return { ...p, actions: [...currentActions, actionKey] };
+                                  }
+                                });
                               }}
                             >
                               {action}
@@ -1872,6 +1955,9 @@ export default function AuditDashboardPage() {
                           );
                         })}
                       </HStack>
+                      <FormHelperText>
+                        Selected: {newPolicy.actions?.join(', ') || 'none'}
+                      </FormHelperText>
                     </FormControl>
 
                     <Box>
