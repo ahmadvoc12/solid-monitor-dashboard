@@ -20,10 +20,9 @@ import {
   getSolidDataset, getThingAll, getUrlAll, getDatetime, getPodUrlAll,
   getStringNoLocaleAll, createThing, setUrl, setDatetime, setStringNoLocale,
   saveSolidDatasetAt, getBoolean, getInteger, createSolidDataset, setThing,
-  setBoolean, setInteger, addUrl, removeThing, overwriteFile, getFile,
-  solidClientAuthentication,
+  setBoolean, setInteger, addUrl, removeThing,
 } from '@inrupt/solid-client';
-import type { SolidDataset, ThingPersisted } from '@inrupt/solid-client';
+import type { SolidDataset } from '@inrupt/solid-client';
 
 const DPV = 'https://w3id.org/dpv#';
 const DCT = 'http://purl.org/dc/terms/';
