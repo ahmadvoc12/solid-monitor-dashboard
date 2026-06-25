@@ -23,9 +23,6 @@ import {
   setBoolean, setInteger, addUrl, removeThing, ThingPersisted, SolidDataset,
 } from '@inrupt/solid-client';
 
-/* ======================================================
-   CONSTANTS & ONTOLOGY PREFIXES
-====================================================== */
 const DPV = 'https://w3id.org/dpv#';
 const DCT = 'http://purl.org/dc/terms/';
 const EX = 'https://example.org/privacy#';
@@ -39,20 +36,15 @@ const SKOS = 'http://www.w3.org/2004/02/skos/core#';
 const SOTW = 'https://w3id.org/force/sotw#';
 const SCHEMA = 'https://schema.org/';
 
-/* ======================================================
-   PATHS
-====================================================== */
 const ACCESS_LOG_PATH = 'private/audit/access/access-log.ttl';
 const POLICY_PATH = 'private/audit/access/monitor-policy.ttl';
 const PRIVACY_MAPPING_PATH = 'private/dpv-mapping.jsonld';
 const STATE_OF_WORLD_PATH = 'private/audit/monitoring/state-of-the-world.ttl';
 
-/* ======================================================
-   FIELD LABEL MAPPING
-====================================================== */
 const FIELD_LABELS: Record<string, string> = {
   'https://schema.org/identifier': 'Identifier Number Person',
   'http://purl.org/dc/terms/created': 'Created Timestamp',
+  'http://purl.org/dc/terms/modified': 'Modified Timestamp',
   'https://schema.org/email': 'Email',
   'https://schema.org/name': 'Name',
   'https://schema.org/birthDate': 'Birth Date',
@@ -61,18 +53,12 @@ const FIELD_LABELS: Record<string, string> = {
   'https://schema.org/bloodType': 'Blood Type',
 };
 
-/* ======================================================
-   SENSITIVE CATEGORIES (DPV)
-====================================================== */
 const SENSITIVE_CATEGORIES = [
   `${DPV}SensitivePersonalData`,
   `${DPV}SpecialCategoryPersonalData`,
   `${DPV}IdentifyingPersonalData`,
 ];
 
-/* ======================================================
-   ACTION HIERARCHY - ODRL COMPLIANT
-====================================================== */
 const ACTION_HIERARCHY: Record<string, string | null> = {
   [`${EX}read`]: `${ODRL}use`,
   [`${EX}create`]: `${ODRL}use`,
@@ -93,9 +79,6 @@ function actionIncludedIn(actionA: string, actionB: string): boolean {
   return false;
 }
 
-/* ======================================================
-   UTILS
-====================================================== */
 function cleanIRI(iri: string): string {
   if (!iri || typeof iri !== 'string') return iri || '';
   let cleaned = iri.replace(/^<|>$/g, '');
@@ -201,9 +184,6 @@ function parseXsdDateTime(value: string | undefined): Date | null {
   }
 }
 
-/* ======================================================
-   TYPES
-====================================================== */
 type AccessedField = {
   fieldIri: string;
   fieldName: string;
@@ -227,9 +207,14 @@ type PolicyEvaluation = {
 type FieldViolation = {
   violatedField: string;
   violatedPolicy: string;
+  violationType?: string;
+  violationReason?: string;
   observedCount?: number;
   allowedLimit?: number;
-  violationReason?: string;
+  requesterWebId?: string;
+  allowedAssignee?: string;
+  currentTime?: string;
+  policyDate?: string;
 };
 
 type AccessLogEntry = {
@@ -240,6 +225,7 @@ type AccessLogEntry = {
   decision: 'ALLOWED' | 'VIOLATION';
   accessMethod: string;
   accessedResource: string;
+  requesterWebId?: string;
   fields: AccessedField[];
   policyEvaluations: PolicyEvaluation[];
   violations: FieldViolation[];
@@ -251,7 +237,6 @@ type AccessLogEntry = {
   deonticState?: string;
 };
 
-// ✅ FIXED: Explicit type definition for constraint types
 type ConstraintType = 'count' | 'timeWindow' | 'location' | 'recipient' | 'temporal';
 type ConstraintOperator = 'lteq' | 'gteq' | 'eq' | 'isAnyOf';
 
@@ -302,9 +287,6 @@ type StateOfTheWorld = {
   counts: SotwCount[];
 };
 
-/* ======================================================
-   ✅ HELPER: Create default constraint with proper typing
-====================================================== */
 function createDefaultConstraint(type: ConstraintType = 'count'): PolicyConstraint {
   switch (type) {
     case 'count':
@@ -325,9 +307,10 @@ function createDefaultConstraint(type: ConstraintType = 'count'): PolicyConstrai
   }
 }
 
-/* ======================================================
-   PARSE FUNCTIONS
-====================================================== */
+function getFirstValue(values: string[]): string {
+  return values[0] || '';
+}
+
 function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry | null {
   try {
     const types = getUrlAll(thing, `${RDF}type`);
@@ -341,15 +324,29 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
       decision = deonticState.includes('Violated') ? 'VIOLATION' : 'ALLOWED';
     } else {
       const legacyDecision = getStringNoLocaleAll(thing, `${REPORT}decision`)[0];
-      decision = (legacyDecision as 'ALLOWED' | 'VIOLATION') || 'ALLOWED';
+      if (legacyDecision) {
+        decision = legacyDecision.toUpperCase().includes('VIOLATION') ? 'VIOLATION' : 'ALLOWED';
+      } else {
+        decision = 'ALLOWED';
+      }
     }
 
     const accessId = thing.url.split('#').pop() ?? thing.url;
     const startedAt = getDatetime(thing, `${PROV}startedAtTime`) ?? null;
     const app = extractAppFromThing(thing);
 
-    const accessMethod = getStringNoLocaleAll(thing, `${ODRL}action`)[0] ?? 'read';
-    const accessedResource = cleanIRI(getUrlAll(thing, `${PROV}used`)[0] ?? '');
+    const accessMethod = getStringNoLocaleAll(thing, `${REPORT}requestedAction`)[0]
+      || getStringNoLocaleAll(thing, `${REPORT}accessMethod`)[0]
+      || getStringNoLocaleAll(thing, `${ODRL}action`)[0]
+      || 'read';
+    
+    const accessedResource = cleanIRI(
+      getUrlAll(thing, `${REPORT}accessedResource`)[0]
+      || getUrlAll(thing, `${PROV}used`)[0]
+      || ''
+    );
+
+    const requesterWebId = cleanIRI(getUrlAll(thing, `${REPORT}requesterWebID`)[0] || '');
 
     const activationState = getStringNoLocaleAll(thing, `${REPORT}activationState`)[0];
     const attemptState = getStringNoLocaleAll(thing, `${REPORT}attemptState`)[0];
@@ -358,6 +355,7 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
     const fields: AccessedField[] = [];
     const fieldsBundle = getUrlAll(thing, `${REPORT}hasFieldsBundle`)[0]
       ?? getUrlAll(thing, `${EX}hasFieldsBundle`)[0];
+    
     if (fieldsBundle) {
       getThingAll(dataset).forEach((fieldThing: any) => {
         const fieldTypes = getUrlAll(fieldThing, `${RDF}type`);
@@ -366,14 +364,41 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
           ?? getUrlAll(fieldThing, `${EX}belongsToBundle`)[0];
         if (!bundlesMatch(belongsToBundle, fieldsBundle)) return;
 
-        const rawIri = getUrlAll(fieldThing, `${EX}fieldIRI`)[0] ?? '';
+        const rawIri = getFirstValue(getUrlAll(fieldThing, `${REPORT}fieldIRI`))
+          || getFirstValue(getUrlAll(fieldThing, `${EX}fieldIRI`))
+          || '';
+        
+        const fieldNameFromRdf = getFirstValue(getStringNoLocaleAll(fieldThing, `${REPORT}fieldName`))
+          || getFirstValue(getStringNoLocaleAll(fieldThing, `${EX}fieldName`))
+          || '';
+        
+        const fieldValue = getFirstValue(getStringNoLocaleAll(fieldThing, `${REPORT}fieldValue`))
+          || getFirstValue(getStringNoLocaleAll(fieldThing, `${EX}fieldValue`))
+          || '';
+        
+        const isSensitiveStr = getFirstValue(getStringNoLocaleAll(fieldThing, `${REPORT}isSensitive`))
+          || getFirstValue(getStringNoLocaleAll(fieldThing, `${EX}isSensitive`))
+          || 'false';
+        const isSensitive = isSensitiveStr.toLowerCase() === 'true';
+        
+        const dataCategory = getFirstValue(getUrlAll(fieldThing, `${REPORT}dataCategory`))
+          || getFirstValue(getUrlAll(fieldThing, `${EX}dataCategory`))
+          || `${DPV}PersonalData`;
+        
+        const personalDataType = getFirstValue(getUrlAll(fieldThing, `${REPORT}personalDataType`))
+          || getFirstValue(getUrlAll(fieldThing, `${EX}personalDataType`))
+          || `${DPV}Data`;
+
+        const cleanFieldIri = cleanIRI(rawIri);
+        const finalFieldName = fieldNameFromRdf || getFieldLabel(cleanFieldIri);
+
         fields.push({
-          fieldIri: cleanIRI(rawIri),
-          fieldName: getFieldLabel(cleanIRI(rawIri)),
-          fieldValue: getStringNoLocaleAll(fieldThing, `${EX}fieldValue`)[0] ?? '',
-          isSensitive: getBoolean(fieldThing, `${EX}isSensitive`) ?? false,
-          dataCategory: getUrlAll(fieldThing, `${EX}dataCategory`)[0] ?? `${DPV}PersonalData`,
-          personalDataType: getUrlAll(fieldThing, `${EX}personalDataType`)[0] ?? `${DPV}Data`,
+          fieldIri: cleanFieldIri,
+          fieldName: finalFieldName,
+          fieldValue,
+          isSensitive,
+          dataCategory: cleanIRI(dataCategory),
+          personalDataType: cleanIRI(personalDataType),
         });
       });
     }
@@ -398,13 +423,66 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
 
     if (decision === 'VIOLATION') {
       evaluatedPolicies.forEach(p => violatedPolicies.push(cleanIRI(p)));
-      fields.filter(f => f.isSensitive).forEach(f => {
-        violations.push({
-          violatedField: f.fieldIri,
-          violatedPolicy: violatedPolicies[0] || 'unknown',
-          violationReason: 'Sensitive data access violation',
+
+      const violationBundle = getUrlAll(thing, `${REPORT}hasViolationBundle`)[0];
+      if (violationBundle) {
+        getThingAll(dataset).forEach((violThing: any) => {
+          const violTypes = getUrlAll(violThing, `${RDF}type`);
+          if (!violTypes.some((t: string) => t.includes('PolicyViolation'))) return;
+          
+          const belongsToVBundle = getUrlAll(violThing, `${REPORT}belongsToBundle`)[0];
+          if (!bundlesMatch(belongsToVBundle, violationBundle)) return;
+
+          const violatedPolicyUrls = getUrlAll(violThing, `${REPORT}violatedPolicy`);
+          violatedPolicyUrls.forEach(p => {
+            const cleanP = cleanIRI(p);
+            if (!violatedPolicies.includes(cleanP)) violatedPolicies.push(cleanP);
+          });
+
+          const fieldViolationUrls = getUrlAll(violThing, `${REPORT}hasFieldViolation`);
+          fieldViolationUrls.forEach(fvUrl => {
+            const fvThing = getThingAll(dataset).find((t: any) => 
+              cleanIRI(t.url) === cleanIRI(fvUrl)
+            );
+            if (!fvThing) return;
+
+            const violatedField = cleanIRI(getFirstValue(getUrlAll(fvThing, `${REPORT}violatedField`)));
+            const violatedPolicy = cleanIRI(getFirstValue(getUrlAll(fvThing, `${REPORT}violatedPolicy`)));
+            const violationType = getFirstValue(getStringNoLocaleAll(fvThing, `${REPORT}violationType`));
+            const violationReason = getFirstValue(getStringNoLocaleAll(fvThing, `${REPORT}violationReason`));
+            const observedCount = getInteger(fvThing, `${REPORT}observedCount`) ?? undefined;
+            const allowedLimit = getInteger(fvThing, `${REPORT}allowedLimit`) ?? undefined;
+            const fvRequesterWebId = cleanIRI(getFirstValue(getUrlAll(fvThing, `${REPORT}requesterWebID`)));
+            const allowedAssignee = cleanIRI(getFirstValue(getUrlAll(fvThing, `${REPORT}allowedAssignee`)));
+            const currentTime = getFirstValue(getStringNoLocaleAll(fvThing, `${REPORT}currentTime`));
+            const policyDate = getFirstValue(getStringNoLocaleAll(fvThing, `${REPORT}policyDate`));
+
+            violations.push({
+              violatedField,
+              violatedPolicy,
+              violationType,
+              violationReason,
+              observedCount,
+              allowedLimit,
+              requesterWebId: fvRequesterWebId,
+              allowedAssignee,
+              currentTime,
+              policyDate,
+            });
+          });
         });
-      });
+      }
+
+      if (violations.length === 0) {
+        fields.filter(f => f.isSensitive).forEach(f => {
+          violations.push({
+            violatedField: f.fieldIri,
+            violatedPolicy: violatedPolicies[0] || 'unknown',
+            violationType: 'sensitive-data',
+            violationReason: 'Sensitive data access violation',
+          });
+        });
+      }
     }
 
     return {
@@ -415,6 +493,7 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
       decision,
       accessMethod: cleanIRI(accessMethod),
       accessedResource,
+      requesterWebId,
       fields,
       policyEvaluations,
       violations,
@@ -453,7 +532,8 @@ function parseStateOfTheWorld(thing: any, dataset: SolidDataset): StateOfTheWorl
       if (countThing) {
         const target = cleanIRI(getUrlAll(countThing, `${ODRL}target`)[0] ?? '');
         const countValue = getInteger(countThing, `${SOTW}countValue`) ?? 0;
-        const actionType = getStringNoLocaleAll(countThing, `${ODRL}action`)[0];
+        const actionType = getStringNoLocaleAll(countThing, `${ODRL}action`)[0]
+          || getStringNoLocaleAll(countThing, `${SOTW}actionType`)[0];
 
         if (target) {
           const newCount: SotwCount = {
@@ -520,9 +600,6 @@ function parsePrivacyMapping(thing: any): PrivacyMapping | null {
   }
 }
 
-/* ======================================================
-   PAGE COMPONENT
-====================================================== */
 export default function AuditDashboardPage() {
   const { session, isLoggedIn } = useSolidSession();
   const router = useRouter();
@@ -541,7 +618,6 @@ export default function AuditDashboardPage() {
   const [loadingPolicies, setLoadingPolicies] = useState(false);
   const [editingPolicy, setEditingPolicy] = useState<Policy | null>(null);
 
-  // ✅ FIXED: Use createDefaultConstraint for proper typing
   const [newPolicy, setNewPolicy] = useState<Partial<Policy>>({
     title: '',
     description: '',
@@ -598,6 +674,9 @@ export default function AuditDashboardPage() {
       });
 
       console.log(`📊 Parsed ${parsed.length} entries, ${parsed.filter(l => l.decision === 'VIOLATION').length} VIOLATION`);
+      parsed.forEach((entry, i) => {
+        console.log(`  [${i+1}] ${entry.accessId} | ${entry.app} | ${entry.decision} | fields: ${entry.fields.length} | violations: ${entry.violations.length}`);
+      });
 
       parsed.sort((a, b) => {
         if (!a.startedAt) return 1;
@@ -1105,6 +1184,8 @@ export default function AuditDashboardPage() {
       let violatedPolicyId = 'unknown';
       if (latestLog.violations.length > 0) {
         violatedPolicyId = latestLog.violations[0].violatedPolicy;
+      } else if (latestLog.violatedPolicies.length > 0) {
+        violatedPolicyId = latestLog.violatedPolicies[0];
       } else if (latestLog.fields.some(f => f.isSensitive)) {
         const firstSensitiveField = latestLog.fields.find(f => f.isSensitive);
         if (firstSensitiveField) violatedPolicyId = firstSensitiveField.fieldIri;
@@ -1142,6 +1223,9 @@ export default function AuditDashboardPage() {
     const byTarget = policies.find(p => cleanIRI(p.targetIRI || '') === cleanIdentifier);
     if (byTarget) return byTarget;
 
+    const byId = policies.find(p => cleanIRI(p.id) === cleanIdentifier);
+    if (byId) return byId;
+
     const shortName = shortIri(cleanIdentifier);
     const byShort = policies.find(p => p.targetField === shortName);
     if (byShort) return byShort;
@@ -1149,7 +1233,6 @@ export default function AuditDashboardPage() {
     return undefined;
   };
 
-  // ✅ FIXED: Use createDefaultConstraint
   const handleAddPolicy = () => {
     setEditingPolicy(null);
     setNewPolicy({
@@ -1219,7 +1302,6 @@ export default function AuditDashboardPage() {
     return `${c.type}: ${c.value}`;
   };
 
-  // ✅ FIXED: Helper to update a constraint at a specific index with proper typing
   const updateConstraintAtIndex = (idx: number, updates: Partial<PolicyConstraint>) => {
     setNewPolicy((p) => {
       const nc = [...(p.constraints || [])];
@@ -1228,9 +1310,21 @@ export default function AuditDashboardPage() {
     });
   };
 
+  const formatViolationReason = (v: FieldViolation): string => {
+    if (v.violationType === 'count') {
+      return `Count: ${v.observedCount} > ${v.allowedLimit}`;
+    }
+    if (v.violationType === 'recipient') {
+      return `Unauthorized app: ${shortIri(v.requesterWebId || 'unknown')}`;
+    }
+    if (v.violationType === 'temporal') {
+      return `Temporal: ${v.violationReason}`;
+    }
+    return v.violationReason || 'Unknown violation';
+  };
+
   return (
     <Box maxW="7xl" mx="auto" py={10} px={4}>
-      {/* HEADER */}
       <Flex justify="space-between" align="center" mb={6} wrap="wrap" gap={3}>
         <VStack align="start" spacing={1}>
           <Text fontSize="2xl" fontWeight="bold">Solid Audit Dashboard</Text>
@@ -1244,7 +1338,6 @@ export default function AuditDashboardPage() {
       </Flex>
       <Divider mb={6} />
 
-      {/* STATS CARDS */}
       <SimpleGrid columns={{ base: 2, md: 4 }} spacing={4} mb={6}>
         <Card><CardBody><Stat><StatLabel>Total Access Events</StatLabel><StatNumber>{stats.total}</StatNumber></Stat></CardBody></Card>
         <Card><CardBody><Stat><StatLabel>Policy Violations</StatLabel><StatNumber color={stats.violations > 0 ? 'red.500' : 'green.500'}>{stats.violations}</StatNumber><StatHelpText>{stats.total > 0 ? `${Math.round((stats.violations / stats.total) * 100)}%` : '0%'}</StatHelpText></Stat></CardBody></Card>
@@ -1252,7 +1345,6 @@ export default function AuditDashboardPage() {
         <Card><CardBody><Stat><StatLabel>Unique Applications</StatLabel><StatNumber>{stats.apps}</StatNumber></Stat></CardBody></Card>
       </SimpleGrid>
 
-      {/* FILTER BAR */}
       <Card mb={6}>
         <CardBody>
           <Flex justify="space-between" align="center" mb={4}>
@@ -1290,11 +1382,11 @@ export default function AuditDashboardPage() {
       {loading && <Flex justify="center" py={10}><Spinner size="xl" /></Flex>}
       {!loading && filteredLogs.length === 0 && <Alert status="info"><AlertIcon />No audit logs match the selected filters.</Alert>}
 
-      {/* TABS */}
       {!loading && (
-        <Tabs variant="enclosed">
+        <Tabs variant="enclosed" defaultIndex={0}>
           <TabList>
             <Tab>Violation Summary (Per App)</Tab>
+            <Tab>All Access Logs</Tab>
             <Tab>State of the World</Tab>
           </TabList>
           <TabPanels>
@@ -1362,6 +1454,67 @@ export default function AuditDashboardPage() {
               <Card>
                 <CardHeader>
                   <Flex justify="space-between" align="center">
+                    <Text fontWeight="bold">All Access Logs ({filteredLogs.length})</Text>
+                    <Button size="sm" leftIcon={<RepeatIcon />} onClick={loadAccessLogs} isLoading={loading}>Refresh</Button>
+                  </Flex>
+                </CardHeader>
+                <CardBody>
+                  <Table variant="simple" size="sm">
+                    <Thead>
+                      <Tr>
+                        <Th>Time</Th>
+                        <Th>App</Th>
+                        <Th>Decision</Th>
+                        <Th>Action</Th>
+                        <Th>Fields</Th>
+                        <Th>Violations</Th>
+                      </Tr>
+                    </Thead>
+                    <Tbody>
+                      {filteredLogs.slice(0, 50).map((log) => (
+                        <Tr key={log.id} bg={log.decision === 'VIOLATION' ? 'red.50' : 'white'}>
+                          <Td fontSize="xs">{log.startedAt?.toLocaleString()}</Td>
+                          <Td fontWeight="medium">{log.app}</Td>
+                          <Td>
+                            <Badge colorScheme={log.decision === 'VIOLATION' ? 'red' : 'green'}>
+                              {log.decision}
+                            </Badge>
+                          </Td>
+                          <Td><Code fontSize="xs">{shortIri(log.accessMethod)}</Code></Td>
+                          <Td>
+                            <VStack align="start" spacing={0}>
+                              {log.fields.slice(0, 3).map((f, i) => (
+                                <Text key={i} fontSize="xs">
+                                  {f.isSensitive && <Badge colorScheme="red" fontSize="2xs" mr={1}>S</Badge>}
+                                  {f.fieldName}
+                                </Text>
+                              ))}
+                              {log.fields.length > 3 && <Text fontSize="xs" color="gray.500">+{log.fields.length - 3} more</Text>}
+                            </VStack>
+                          </Td>
+                          <Td>
+                            <VStack align="start" spacing={0}>
+                              {log.violations.slice(0, 2).map((v, i) => (
+                                <Tooltip key={i} label={v.violationReason}>
+                                  <Tag size="sm" colorScheme={v.violationType === 'recipient' ? 'orange' : v.violationType === 'count' ? 'purple' : 'red'}>
+                                    {v.violationType || 'unknown'}
+                                  </Tag>
+                                </Tooltip>
+                              ))}
+                            </VStack>
+                          </Td>
+                        </Tr>
+                      ))}
+                    </Tbody>
+                  </Table>
+                </CardBody>
+              </Card>
+            </TabPanel>
+
+            <TabPanel>
+              <Card>
+                <CardHeader>
+                  <Flex justify="space-between" align="center">
                     <VStack align="start" spacing={1}>
                       <Text fontWeight="bold">State of the World (SOTW)</Text>
                       {sotwData && <Text fontSize="sm" color="gray.500">ID: ex:sotw-current</Text>}
@@ -1411,8 +1564,7 @@ export default function AuditDashboardPage() {
         </Tabs>
       )}
 
-      {/* DETAIL MODAL */}
-      <Modal isOpen={isDetailModalOpen} onClose={onDetailModalClose} size="5xl">
+      <Modal isOpen={isDetailModalOpen} onClose={onDetailModalClose} size="6xl">
         <ModalOverlay />
         <ModalContent bg="white" color="gray.800">
           <ModalHeader borderBottom="1px solid" borderColor="gray.200">
@@ -1430,40 +1582,65 @@ export default function AuditDashboardPage() {
                   <Thead bg="gray.50">
                     <Tr>
                       <Th>Time</Th>
+                      <Th>Requester</Th>
                       <Th>Policy</Th>
                       <Th>Deontic State</Th>
-                      <Th>Violated Fields</Th>
+                      <Th>Violation Type</Th>
+                      <Th>Details</Th>
                     </Tr>
                   </Thead>
                   <Tbody>
                     {selectedAppHistory.logs.map((log) => {
                       let violatedPolicyId = 'unknown';
                       if (log.violations.length > 0) violatedPolicyId = log.violations[0].violatedPolicy;
-                      else if (log.fields.some(f => f.isSensitive)) {
-                        const firstSensitive = log.fields.find(f => f.isSensitive);
-                        if (firstSensitive) violatedPolicyId = firstSensitive.fieldIri;
-                      }
+                      else if (log.violatedPolicies.length > 0) violatedPolicyId = log.violatedPolicies[0];
 
                       const matchedPolicy = findPolicyByViolation(violatedPolicyId);
                       const policyTitle = matchedPolicy ? matchedPolicy.title : 'Unknown Policy';
 
-                      let violatedFieldsText = 'General';
-                      if (log.violations.length > 0) {
-                        violatedFieldsText = log.violations.map(v => getFieldLabel(v.violatedField)).join(', ');
-                      } else if (log.fields.some(f => f.isSensitive)) {
-                        violatedFieldsText = log.fields.filter(f => f.isSensitive).map(f => f.fieldName).join(', ');
-                      }
-
                       return (
                         <Tr key={log.id} bg="red.50">
-                          <Td>{log.startedAt?.toLocaleString()}</Td>
-                          <Td><Text fontWeight="medium" color="red.600">{policyTitle}</Text></Td>
+                          <Td fontSize="xs">{log.startedAt?.toLocaleString()}</Td>
+                          <Td>
+                            <Tooltip label={log.requesterWebId}>
+                              <Text fontSize="xs" maxW="150px" isTruncated>
+                                {shortIri(log.requesterWebId || log.app)}
+                              </Text>
+                            </Tooltip>
+                          </Td>
+                          <Td><Text fontWeight="medium" color="red.600" fontSize="xs">{policyTitle}</Text></Td>
                           <Td>
                             <Badge colorScheme={log.deonticState?.includes('Violated') ? 'red' : 'green'}>
                               {shortIri(log.deonticState || log.decision)}
                             </Badge>
                           </Td>
-                          <Td>{violatedFieldsText}</Td>
+                          <Td>
+                            <VStack align="start" spacing={1}>
+                              {log.violations.map((v, i) => (
+                                <Tag key={i} size="sm" colorScheme={
+                                  v.violationType === 'recipient' ? 'orange' :
+                                  v.violationType === 'count' ? 'purple' :
+                                  v.violationType === 'temporal' ? 'blue' : 'red'
+                                }>
+                                  {v.violationType || 'unknown'}
+                                </Tag>
+                              ))}
+                            </VStack>
+                          </Td>
+                          <Td>
+                            <VStack align="start" spacing={1}>
+                              {log.violations.map((v, i) => (
+                                <Text key={i} fontSize="xs" maxW="300px">
+                                  {getFieldLabel(v.violatedField)}: {formatViolationReason(v)}
+                                </Text>
+                              ))}
+                              {log.violations.length === 0 && log.fields.some(f => f.isSensitive) && (
+                                <Text fontSize="xs" color="orange.600">
+                                  Sensitive fields: {log.fields.filter(f => f.isSensitive).map(f => f.fieldName).join(', ')}
+                                </Text>
+                              )}
+                            </VStack>
+                          </Td>
                         </Tr>
                       );
                     })}
@@ -1478,7 +1655,6 @@ export default function AuditDashboardPage() {
         </ModalContent>
       </Modal>
 
-      {/* POLICY SETTINGS MODAL */}
       <Modal isOpen={isPolicyModalOpen} onClose={onPolicyModalClose} size="5xl">
         <ModalOverlay />
         <ModalContent bg="white" color="gray.800">
@@ -1579,7 +1755,6 @@ export default function AuditDashboardPage() {
                       </HStack>
                     </FormControl>
 
-                    {/* ✅ CONSTRAINTS - FIXED with proper typing */}
                     <Box>
                       <Text fontWeight="bold" mb={2}>Constraints</Text>
                       <VStack spacing={3} align="stretch">
@@ -1725,7 +1900,6 @@ export default function AuditDashboardPage() {
                           </Box>
                         ))}
 
-                        {/* ✅ FIXED: Use createDefaultConstraint for proper typing */}
                         <Button
                           size="sm"
                           leftIcon={<AddIcon />}
@@ -1753,7 +1927,6 @@ export default function AuditDashboardPage() {
               </AccordionItem>
             </Accordion>
 
-            {/* Existing Policies Table */}
             <Box mt={6}>
               <Text fontWeight="bold" mb={3}>Existing Policies</Text>
               {loadingPolicies ? <Spinner /> : (
@@ -1818,7 +1991,6 @@ export default function AuditDashboardPage() {
         </ModalContent>
       </Modal>
 
-      {/* PRIVACY SETTINGS MODAL */}
       <Modal isOpen={isPrivacyModalOpen} onClose={onPrivacyModalClose} size="2xl">
         <ModalOverlay />
         <ModalContent bg="white" color="gray.800">
