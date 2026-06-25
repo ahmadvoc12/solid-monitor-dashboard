@@ -68,15 +68,10 @@ const ACTION_HIERARCHY: Record<string, string | null> = {
   [`${ODRL}transfer`]: null,
 };
 
-/* ======================================================
-   ✅ NEW: Normalize action IRI to short form (ex:read, ex:create, ex:update)
-   This ensures consistency between UI and storage
-====================================================== */
 function normalizeAction(actionIri: string): string {
   const clean = cleanIRI(actionIri);
   if (!clean) return '';
   
-  // Map full IRI to short form
   if (clean === `${EX}read` || clean === 'ex:read' || clean.endsWith('/read') || clean.endsWith('#read')) {
     return 'ex:read';
   }
@@ -89,22 +84,17 @@ function normalizeAction(actionIri: string): string {
   if (clean === `${ODRL}use`) return 'odrl:use';
   if (clean === `${ODRL}transfer`) return 'odrl:transfer';
   
-  // Fallback: keep short version
   const short = shortIri(clean);
   if (short.startsWith('ex:')) return short;
   return `ex:${short}`;
 }
 
-/* ======================================================
-   ✅ NEW: Convert short action form back to full IRI for storage
-====================================================== */
 function actionToFullIri(actionShort: string): string {
   if (actionShort === 'ex:read') return `${EX}read`;
   if (actionShort === 'ex:create') return `${EX}create`;
   if (actionShort === 'ex:update') return `${EX}update`;
   if (actionShort === 'odrl:use') return `${ODRL}use`;
   if (actionShort === 'odrl:transfer') return `${ODRL}transfer`;
-  // Assume it's already a full IRI
   return resolvePrefixedIri(actionShort);
 }
 
@@ -910,9 +900,6 @@ export default function AuditDashboardPage() {
 
   useEffect(() => { loadStateOfTheWorld(); }, [session]);
 
-  /* ======================================================
-     ✅ FIXED: loadPolicies - normalize actions & parse all constraint types
-====================================================== */
   const loadPolicies = async () => {
     if (!session?.info?.webId) return;
     setLoadingPolicies(true);
@@ -944,7 +931,6 @@ export default function AuditDashboardPage() {
             t.url === permUrl || cleanIRI(t.url) === cleanIRI(permUrl)
           );
           if (permThing) {
-            // ✅ FIXED: Normalize action to short form (ex:read, ex:create, ex:update)
             const actionUrls = getUrlAll(permThing, `${ODRL}action`);
             actionUrls.forEach((action: string) => {
               const normalized = normalizeAction(action);
@@ -953,7 +939,6 @@ export default function AuditDashboardPage() {
               }
             });
 
-            // ✅ FIXED: Parse ALL constraint types properly
             const constraintUrls = getUrlAll(permThing, `${ODRL}constraint`);
             constraintUrls.forEach((cUrl: string) => {
               const cThing = getThingAll(dataset).find((t: any) => 
@@ -969,42 +954,33 @@ export default function AuditDashboardPage() {
 
               let constraint: PolicyConstraint | null = null;
 
-              // Count constraint
               if (leftOperand.includes('count')) {
                 constraint = {
                   type: 'count',
                   operator: (op.includes('lteq') ? 'lteq' : op.includes('gteq') ? 'gteq' : 'eq') as ConstraintOperator,
                   value: rightOperandInt ?? 0,
                 };
-              }
-              // Recipient/Assignee constraint
-              else if (leftOperand.includes('assignee') || leftOperand.includes('recipient')) {
+              } else if (leftOperand.includes('assignee') || leftOperand.includes('recipient')) {
                 const recipientValue = rightOperandIri || rightOperandStr || '';
                 constraint = {
                   type: 'recipient',
                   operator: 'eq' as ConstraintOperator,
                   value: cleanIRI(recipientValue),
                 };
-              }
-              // Temporal/DateTime constraint
-              else if (leftOperand.includes('dateTime') || leftOperand.includes('date')) {
+              } else if (leftOperand.includes('dateTime') || leftOperand.includes('date')) {
                 const dateValue = rightOperandStr || '';
                 constraint = {
                   type: 'temporal',
                   operator: (op.includes('lteq') ? 'lteq' : op.includes('gteq') ? 'gteq' : 'eq') as ConstraintOperator,
                   value: dateValue,
                 };
-              }
-              // Location/Spatial constraint
-              else if (leftOperand.includes('spatial')) {
+              } else if (leftOperand.includes('spatial')) {
                 constraint = {
                   type: 'location',
                   operator: 'eq' as ConstraintOperator,
                   value: rightOperandStr || '',
                 };
-              }
-              // TimeWindow constraint
-              else if (leftOperand.includes('timeWindow')) {
+              } else if (leftOperand.includes('timeWindow')) {
                 constraint = {
                   type: 'timeWindow',
                   operator: (op.includes('lteq') ? 'lteq' : op.includes('gteq') ? 'gteq' : 'eq') as ConstraintOperator,
@@ -1033,11 +1009,7 @@ export default function AuditDashboardPage() {
           }
         });
 
-        // Default fallback
         if (actions.length === 0) actions.push('ex:read');
-        if (constraints.length === 0) {
-          constraints.push(createDefaultConstraint('count'));
-        }
 
         console.log(`📋 Policy "${title}" parsed:`, { actions, constraints });
 
@@ -1157,9 +1129,6 @@ export default function AuditDashboardPage() {
 
   useEffect(() => { loadPrivacyMappings(); }, [session]);
 
-  /* ======================================================
-     ✅ FIXED: savePolicy - convert short actions back to full IRI
-====================================================== */
   const savePolicy = async (policy: Policy) => {
     if (!session?.info?.webId) return;
     try {
@@ -1173,9 +1142,41 @@ export default function AuditDashboardPage() {
         dataset = createSolidDataset();
       }
 
-      const policySubjectUrl = editingPolicy?.id
-        ? editingPolicy.id
-        : `${EX_BASE}policy-${policy.targetField.replace(/[^a-z0-9]/gi, '-')}-${Math.random().toString(36).slice(2, 10)}`;
+      // Remove old policy if editing
+      if (editingPolicy) {
+        const oldPolicyUrl = editingPolicy.id;
+        
+        // Remove old permissions and constraints
+        const oldPermissions = getUrlAll(dataset, oldPolicyUrl).filter(t => 
+          getUrlAll(t, `${RDF}type`).some(type => type.includes('Permission'))
+        );
+        
+        oldPermissions.forEach(permThing => {
+          const constraintUrls = getUrlAll(permThing, `${ODRL}constraint`);
+          constraintUrls.forEach(cUrl => {
+            const cThing = getThingAll(dataset).find((t: any) => 
+              t.url === cUrl || cleanIRI(t.url) === cleanIRI(cUrl)
+            );
+            if (cThing) {
+              dataset = removeThing(dataset, cThing);
+            }
+          });
+          dataset = removeThing(dataset, permThing);
+        });
+
+        // Remove old prohibitions
+        const oldProhibitions = getUrlAll(dataset, oldPolicyUrl).filter(t => 
+          getUrlAll(t, `${RDF}type`).some(type => type.includes('Prohibition'))
+        );
+        oldProhibitions.forEach(prohibThing => {
+          dataset = removeThing(dataset, prohibThing);
+        });
+
+        // Remove old policy
+        dataset = removeThing(dataset, oldPolicyUrl);
+      }
+
+      const policySubjectUrl = editingPolicy?.id || `${EX_BASE}policy-${policy.targetField.replace(/[^a-z0-9]/gi, '-')}-${Math.random().toString(36).slice(2, 10)}`;
 
       let policyThing = createThing({ url: policySubjectUrl });
       policyThing = setUrl(policyThing, `${RDF}type`, `${ODRL}Policy`);
@@ -1198,21 +1199,24 @@ export default function AuditDashboardPage() {
         policyThing = setUrl(policyThing, `${ODRL}assignee`, cleanIRI(policy.assignee));
       }
 
-      if (policy.constraints?.length > 0 && policy.actions?.length > 0) {
-        // ✅ FIXED: Convert short actions to full IRI before saving
-        const fullActionIris = (policy.actions || []).map(action => actionToFullIri(action));
-        
-        policy.actions.forEach((actionShort, idx) => {
+      // Create ONE permission with ALL actions
+      if (policy.actions?.length > 0) {
+        const permissionUrl = `${policySubjectUrl}#permission`;
+        const permissionThing = createThing({ url: permissionUrl });
+
+        setUrl(permissionThing, `${ODRL}assigner`, `${EX_BASE}pod-owner`);
+        setUrl(permissionThing, `${ODRL}assignee`, policy.assignee ? cleanIRI(policy.assignee) : `${EX_BASE}any-app`);
+
+        // Add all actions to single permission
+        policy.actions.forEach(actionShort => {
           const fullAction = actionToFullIri(actionShort);
-          const permissionUrl = `${policySubjectUrl}#permission-${idx}`;
-          const permissionThing = createThing({ url: permissionUrl });
-
-          setUrl(permissionThing, `${ODRL}assigner`, `${EX_BASE}pod-owner`);
-          setUrl(permissionThing, `${ODRL}assignee`, policy.assignee ? cleanIRI(policy.assignee) : `${EX_BASE}any-app`);
           setUrl(permissionThing, `${ODRL}action`, fullAction);
+        });
 
+        // Add ALL constraints to this permission (not per action)
+        if (policy.constraints?.length > 0) {
           policy.constraints.forEach((constraint, cIdx) => {
-            const constraintUrl = `${policySubjectUrl}#constraint-${idx}-${cIdx}`;
+            const constraintUrl = `${policySubjectUrl}#constraint-${cIdx}`;
             const constraintThing = createThing({ url: constraintUrl });
 
             if (constraint.type === 'count') {
@@ -1243,22 +1247,19 @@ export default function AuditDashboardPage() {
             setUrl(permissionThing, `${ODRL}constraint`, constraintThing.url);
             dataset = setThing(dataset, constraintThing);
           });
+        }
 
-          setUrl(policyThing, `${ODRL}permission`, permissionThing.url);
-          dataset = setThing(dataset, permissionThing);
-        });
-
-        const prohibitionUrl = `${policySubjectUrl}#prohibition`;
-        const prohibitionThing = createThing({ url: prohibitionUrl });
-        setUrl(prohibitionThing, `${ODRL}assignee`, `${EX_BASE}any-app`);
-        setUrl(prohibitionThing, `${ODRL}action`, `${ODRL}distribute`);
-        setUrl(policyThing, `${ODRL}prohibition`, prohibitionThing.url);
-        dataset = setThing(dataset, prohibitionThing);
+        setUrl(policyThing, `${ODRL}permission`, permissionThing.url);
+        dataset = setThing(dataset, permissionThing);
       }
 
-      if (editingPolicy && editingPolicy.id !== policySubjectUrl) {
-        dataset = removeThing(dataset, editingPolicy.id);
-      }
+      // Add prohibition
+      const prohibitionUrl = `${policySubjectUrl}#prohibition`;
+      const prohibitionThing = createThing({ url: prohibitionUrl });
+      setUrl(prohibitionThing, `${ODRL}assignee`, `${EX_BASE}any-app`);
+      setUrl(prohibitionThing, `${ODRL}action`, `${ODRL}distribute`);
+      setUrl(policyThing, `${ODRL}prohibition`, prohibitionThing.url);
+      dataset = setThing(dataset, prohibitionThing);
 
       dataset = setThing(dataset, policyThing);
       await saveSolidDatasetAt(policyUrl, dataset, { fetch: session.fetch });
@@ -1443,12 +1444,11 @@ export default function AuditDashboardPage() {
 
   const handleEditPolicy = (policy: Policy) => {
     setEditingPolicy(policy);
-    // ✅ FIXED: Ensure actions are in short form when editing
     const normalizedActions = policy.actions.map(a => normalizeAction(a));
     setNewPolicy({ 
       ...policy, 
       actions: normalizedActions.length > 0 ? normalizedActions : ['ex:read'],
-      constraints: policy.constraints.length > 0 ? policy.constraints : [createDefaultConstraint('count')]
+      constraints: policy.constraints.length > 0 ? [...policy.constraints] : []
     });
     onPolicyModalOpen();
   };
@@ -1471,7 +1471,7 @@ export default function AuditDashboardPage() {
       targetIRI: editingPolicy?.targetIRI || newPolicy.targetField,
       active: newPolicy.active ?? true,
       actions: newPolicy.actions || ['ex:read'],
-      constraints: newPolicy.constraints || [createDefaultConstraint('count')],
+      constraints: newPolicy.constraints || [],
       createdAt: editingPolicy?.createdAt || new Date(),
       assignee: newPolicy.assignee,
     };
@@ -1924,12 +1924,11 @@ export default function AuditDashboardPage() {
                       </FormHelperText>
                     </FormControl>
 
-                    {/* ✅ FIXED: Allowed Actions - use consistent short form keys */}
                     <FormControl>
                       <FormLabel>Allowed Actions</FormLabel>
                       <HStack spacing={2} wrap="wrap">
                         {['read', 'create', 'update'].map((action) => {
-                          const actionKey = `ex:${action}`; // Consistent key format
+                          const actionKey = `ex:${action}`;
                           const isSelected = newPolicy.actions?.includes(actionKey) || false;
                           return (
                             <Tag
@@ -2097,7 +2096,7 @@ export default function AuditDashboardPage() {
                                   const nc = (newPolicy.constraints || []).filter((_, i) => i !== idx);
                                   setNewPolicy((p) => ({
                                     ...p,
-                                    constraints: nc.length ? nc : [createDefaultConstraint('count')]
+                                    constraints: nc
                                   }));
                                 }}
                               />
@@ -2167,11 +2166,15 @@ export default function AuditDashboardPage() {
                         </Td>
                         <Td>
                           <VStack align="start" spacing={1}>
-                            {policy.constraints.map((c, idx) => (
-                              <Tag key={`${policy.id}-c-${idx}`} size="sm" colorScheme="gray" variant="subtle">
-                                {formatConstraint(c)}
-                              </Tag>
-                            ))}
+                            {policy.constraints.length === 0 ? (
+                              <Text fontSize="xs" color="gray.400" fontStyle="italic">No constraints</Text>
+                            ) : (
+                              policy.constraints.map((c, idx) => (
+                                <Tag key={`${policy.id}-c-${idx}`} size="sm" colorScheme="gray" variant="subtle">
+                                  {formatConstraint(c)}
+                                </Tag>
+                              ))
+                            )}
                           </VStack>
                         </Td>
                         <Td>
