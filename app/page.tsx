@@ -20,8 +20,10 @@ import {
   getSolidDataset, getThingAll, getUrlAll, getDatetime, getPodUrlAll,
   getStringNoLocaleAll, createThing, setUrl, setDatetime, setStringNoLocale,
   saveSolidDatasetAt, getBoolean, getInteger, createSolidDataset, setThing,
-  setBoolean, setInteger, addUrl, removeThing, ThingPersisted, SolidDataset,
+  setBoolean, setInteger, addUrl, removeThing, overwriteFile, getFile,
+  solidClientAuthentication,
 } from '@inrupt/solid-client';
+import type { SolidDataset, ThingPersisted } from '@inrupt/solid-client';
 
 const DPV = 'https://w3id.org/dpv#';
 const DCT = 'http://purl.org/dc/terms/';
@@ -35,10 +37,12 @@ const RDF = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
 const SKOS = 'http://www.w3.org/2004/02/skos/core#';
 const SOTW = 'https://w3id.org/force/sotw#';
 const SCHEMA = 'https://schema.org/';
+const ACL = 'http://www.w3.org/ns/auth/acl#';
+const FOAF = 'http://xmlns.com/foaf/0.1/';
 
 const ACCESS_LOG_PATH = 'private/audit/access/access-log.ttl';
 const POLICY_PATH = 'private/audit/access/monitor-policy.ttl';
-const PRIVACY_MAPPING_PATH = 'private/dpv-mapping.jsonld';
+const PRIVACY_MAPPING_PATH = 'private/dpv-mapping.ttl';
 const STATE_OF_WORLD_PATH = 'private/audit/monitoring/state-of-the-world.ttl';
 
 const FIELD_LABELS: Record<string, string> = {
@@ -175,15 +179,6 @@ function toXsdDateTime(date: Date | string): string {
   return d.toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
-function parseXsdDateTime(value: string | undefined): Date | null {
-  if (!value) return null;
-  try {
-    return new Date(value);
-  } catch {
-    return null;
-  }
-}
-
 type AccessedField = {
   fieldIri: string;
   fieldName: string;
@@ -310,6 +305,133 @@ function createDefaultConstraint(type: ConstraintType = 'count'): PolicyConstrai
 function getFirstValue(values: string[]): string {
   return values[0] || '';
 }
+
+function getPodBaseUrl(webId: string): string {
+  try {
+    const url = new URL(webId);
+    const parts = url.pathname.split('/').filter(Boolean);
+    if (parts.length > 0) {
+      return `${url.origin}/${parts[0]}/`;
+    }
+    return `${url.origin}/`;
+  } catch {
+    return '';
+  }
+}
+
+async function ensureContainerWithAcl(
+  containerUrl: string,
+  webId: string,
+  fetchFn: typeof fetch
+): Promise<boolean> {
+  try {
+    const headRes = await fetchFn(containerUrl, {
+      method: 'HEAD',
+      headers: { 'Accept': 'text/turtle' },
+    });
+    if (headRes.ok) return true;
+  } catch {}
+
+  try {
+    const createRes = await fetchFn(containerUrl, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'text/turtle',
+        'Link': '<http://www.w3.org/ns/ldp#BasicContainer>; rel="type"',
+        'If-None-Match': '*',
+      },
+      body: '',
+    });
+    if (!createRes.ok && createRes.status !== 409) {
+      console.warn(`Failed to create container ${containerUrl}: ${createRes.status}`);
+      return false;
+    }
+  } catch (e) {
+    console.warn(`Error creating container ${containerUrl}:`, e);
+    return false;
+  }
+
+  try {
+    const aclUrl = containerUrl.endsWith('/') ? `${containerUrl}.acl` : `${containerUrl}.acl`;
+    const aclContent = `@prefix acl: <${ACL}> .
+@prefix foaf: <${FOAF}> .
+
+<#owner>
+    a acl:Authorization ;
+    acl:agent <${webId}> ;
+    acl:accessTo <${containerUrl}> ;
+    acl:default <${containerUrl}> ;
+    acl:mode acl:Read, acl:Write, acl:Control .
+
+<#authenticated>
+    a acl:Authorization ;
+    acl:agentClass foaf:AuthenticatedAgent ;
+    acl:accessTo <${containerUrl}> ;
+    acl:default <${containerUrl}> ;
+    acl:mode acl:Read, acl:Append .
+`;
+    const aclRes = await fetchFn(aclUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'text/turtle' },
+      body: aclContent,
+    });
+    return aclRes.ok || aclRes.status === 409 || aclRes.status === 201;
+  } catch (e) {
+    console.warn(`Failed to create ACL for ${containerUrl}:`, e);
+    return false;
+  }
+}
+
+async function ensureFileExists(
+  fileUrl: string,
+  initialContent: string,
+  contentType: string,
+  webId: string,
+  fetchFn: typeof fetch
+): Promise<boolean> {
+  try {
+    const headRes = await fetchFn(fileUrl, { method: 'HEAD' });
+    if (headRes.ok) return true;
+  } catch {}
+
+  const parentUrl = fileUrl.substring(0, fileUrl.lastIndexOf('/') + 1);
+  await ensureContainerWithAcl(parentUrl, webId, fetchFn);
+
+  try {
+    const putRes = await fetchFn(fileUrl, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': contentType,
+        'If-None-Match': '*',
+      },
+      body: initialContent,
+    });
+    return putRes.ok || putRes.status === 201 || putRes.status === 409;
+  } catch (e) {
+    console.error(`Failed to create file ${fileUrl}:`, e);
+    return false;
+  }
+}
+
+const EMPTY_ACCESS_LOG_TTL = `@prefix ex: <https://example.org/> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix dpv: <https://w3id.org/dpv#> .
+@prefix dct: <http://purl.org/dc/terms/> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix odrl: <http://www.w3.org/ns/odrl/2/> .
+@prefix report: <https://w3id.org/force/compliance-report#> .
+
+ex:access-log a prov:Collection .
+`;
+
+const EMPTY_PRIVACY_MAPPING_TTL = `@prefix ex: <https://example.org/privacy#> .
+@prefix dpv: <https://w3id.org/dpv#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix schema: <https://schema.org/> .
+@prefix dct: <http://purl.org/dc/terms/> .
+
+`;
 
 function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry | null {
   try {
@@ -660,9 +782,39 @@ export default function AuditDashboardPage() {
     try {
       setLoading(true);
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
-      const accessLogUrl = `${podUrls[0]}${ACCESS_LOG_PATH}`;
+      const podBaseUrl = podUrls[0];
+      const accessLogUrl = `${podBaseUrl}${ACCESS_LOG_PATH}`;
 
-      const dataset = await getSolidDataset(accessLogUrl, { fetch: session.fetch });
+      let dataset: SolidDataset;
+      try {
+        dataset = await getSolidDataset(accessLogUrl, { fetch: session.fetch });
+      } catch (err: any) {
+        if (err?.status === 404 || err?.statusCode === 404) {
+          console.log('Access log not found, creating empty one...');
+          const created = await ensureFileExists(
+            accessLogUrl,
+            EMPTY_ACCESS_LOG_TTL,
+            'text/turtle',
+            session.info.webId!,
+            session.fetch
+          );
+          if (created) {
+            dataset = await getSolidDataset(accessLogUrl, { fetch: session.fetch });
+          } else {
+            setLogs([]);
+            toast({
+              title: 'Warning',
+              description: 'Access log file created. Refresh to load.',
+              status: 'info',
+              duration: 3000,
+            });
+            return;
+          }
+        } else {
+          throw err;
+        }
+      }
+
       if (!dataset || typeof dataset !== 'object') { setLogs([]); return; }
 
       const parsed: AccessLogEntry[] = [];
@@ -674,9 +826,6 @@ export default function AuditDashboardPage() {
       });
 
       console.log(`📊 Parsed ${parsed.length} entries, ${parsed.filter(l => l.decision === 'VIOLATION').length} VIOLATION`);
-      parsed.forEach((entry, i) => {
-        console.log(`  [${i+1}] ${entry.accessId} | ${entry.app} | ${entry.decision} | fields: ${entry.fields.length} | violations: ${entry.violations.length}`);
-      });
 
       parsed.sort((a, b) => {
         if (!a.startedAt) return 1;
@@ -688,9 +837,10 @@ export default function AuditDashboardPage() {
       console.error('Failed to load access log:', err);
       toast({
         title: 'Error',
-        description: err?.status === 404 ? 'Audit log not found' : 'Failed to load logs',
+        description: err?.message || 'Failed to load logs',
         status: 'error',
-        duration: 3000,
+        duration: 5000,
+        isClosable: true,
       });
     } finally {
       setLoading(false);
@@ -710,24 +860,33 @@ export default function AuditDashboardPage() {
       try {
         dataset = await getSolidDataset(sotwUrl, { fetch: session.fetch });
       } catch (error: any) {
-        if (error?.status === 404) {
-          dataset = createSolidDataset();
-          const sotwThing = createThing({ url: `${sotwUrl}#sotw-current` });
-          let finalThing = setUrl(sotwThing, `${RDF}type`, `${SOTW}SotW`);
-          finalThing = setDatetime(finalThing, `${SOTW}currentTime`, new Date());
-          finalThing = setUrl(finalThing, `${SOTW}currentLocation`, 'https://www.iso.org/obp/ui/#iso:code:3166:ID');
+        if (error?.status === 404 || error?.statusCode === 404) {
+          const created = await ensureFileExists(
+            sotwUrl,
+            `@prefix ex: <https://example.org/> .
+@prefix sotw: <https://w3id.org/force/sotw#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix odrl: <http://www.w3.org/ns/odrl/2/> .
 
-          Object.entries(FIELD_LABELS).forEach(([iri]) => {
-            const countThing = createThing({ url: `${sotwUrl}#count-${Date.now()}-${Math.random().toString(36).slice(2, 6)}` });
-            let cThing = setUrl(countThing, `${RDF}type`, `${SOTW}Count`);
-            cThing = setInteger(cThing, `${SOTW}countValue`, 0);
-            cThing = setUrl(cThing, `${ODRL}target`, cleanIRI(iri));
-            dataset = setThing(dataset, cThing);
-            finalThing = addUrl(finalThing, `${SOTW}count`, cThing.url);
-          });
-
-          dataset = setThing(dataset, finalThing);
-          await saveSolidDatasetAt(sotwUrl, dataset, { fetch: session.fetch });
+ex:sotw-current a sotw:SotW ;
+    sotw:currentTime "${new Date().toISOString()}"^^xsd:dateTime ;
+    sotw:currentLocation <https://www.iso.org/obp/ui/#iso:code:3166:ID> .
+`,
+            'text/turtle',
+            session.info.webId!,
+            session.fetch
+          );
+          if (created) {
+            dataset = await getSolidDataset(sotwUrl, { fetch: session.fetch });
+          } else {
+            setSotwData({
+              id: 'fallback',
+              currentTime: new Date(),
+              currentLocation: 'Unknown',
+              counts: [],
+            });
+            return;
+          }
         } else {
           throw error;
         }
@@ -869,7 +1028,7 @@ export default function AuditDashboardPage() {
       });
       setPolicies(parsed);
       console.log('✅ Loaded policies:', parsed.length);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to load policies:', err);
       setPolicies([
         {
@@ -896,29 +1055,45 @@ export default function AuditDashboardPage() {
     setLoadingPrivacy(true);
     try {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
-      const mappingUrl = `${podUrls[0]}${PRIVACY_MAPPING_PATH}`;
+      const podBaseUrl = podUrls[0];
+      const mappingUrl = `${podBaseUrl}${PRIVACY_MAPPING_PATH}`;
 
-      let savedMappings: PrivacyMapping[] = [];
+      let dataset: SolidDataset;
       try {
-        const dataset = await getSolidDataset(mappingUrl, { fetch: session.fetch });
-        getThingAll(dataset).forEach((thing: any) => {
-          const parsed = parsePrivacyMapping(thing);
-          if (parsed) savedMappings.push(parsed);
-        });
+        dataset = await getSolidDataset(mappingUrl, { fetch: session.fetch });
       } catch (e: any) {
         if (e?.status === 404 || e?.statusCode === 404) {
-          const fallbackUrl = mappingUrl.replace('.jsonld', '.ttl');
-          try {
-            const dataset = await getSolidDataset(fallbackUrl, { fetch: session.fetch });
-            getThingAll(dataset).forEach((thing: any) => {
-              const parsed = parsePrivacyMapping(thing);
-              if (parsed) savedMappings.push(parsed);
-            });
-          } catch {
-            console.log('Privacy mapping file not found. Will create on save.');
+          console.log('Privacy mapping not found, creating new one...');
+          const created = await ensureFileExists(
+            mappingUrl,
+            EMPTY_PRIVACY_MAPPING_TTL,
+            'text/turtle',
+            session.info.webId!,
+            session.fetch
+          );
+          if (created) {
+            dataset = await getSolidDataset(mappingUrl, { fetch: session.fetch });
+          } else {
+            setPrivacyMappings(Object.entries(FIELD_LABELS).map(([iri, label]) => ({
+              fieldIri: cleanIRI(iri),
+              fieldLabel: label,
+              isSensitive: false,
+              dataCategory: `${DPV}PersonalData`,
+              personalDataType: `${DPV}Data`,
+              domain: cleanIRI(iri).split('/').pop()?.split('#').pop(),
+            })));
+            return;
           }
+        } else {
+          throw e;
         }
       }
+
+      const savedMappings: PrivacyMapping[] = [];
+      getThingAll(dataset).forEach((thing: any) => {
+        const parsed = parsePrivacyMapping(thing);
+        if (parsed) savedMappings.push(parsed);
+      });
 
       const savedMap = new Map(savedMappings.map(m => [cleanIRI(m.fieldIri), m]));
 
@@ -943,8 +1118,16 @@ export default function AuditDashboardPage() {
       });
 
       setPrivacyMappings(finalMappings);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error loading privacy mappings:', err);
+      setPrivacyMappings(Object.entries(FIELD_LABELS).map(([iri, label]) => ({
+        fieldIri: cleanIRI(iri),
+        fieldLabel: label,
+        isSensitive: false,
+        dataCategory: `${DPV}PersonalData`,
+        personalDataType: `${DPV}Data`,
+        domain: cleanIRI(iri).split('/').pop()?.split('#').pop(),
+      })));
     } finally {
       setLoadingPrivacy(false);
     }
@@ -1096,14 +1279,30 @@ export default function AuditDashboardPage() {
     if (!session?.info?.webId) return;
     try {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
-      const mappingUrl = `${podUrls[0]}${PRIVACY_MAPPING_PATH}`;
+      const podBaseUrl = podUrls[0];
+      const mappingUrl = `${podBaseUrl}${PRIVACY_MAPPING_PATH}`;
 
       let dataset: SolidDataset;
       try {
         dataset = await getSolidDataset(mappingUrl, { fetch: session.fetch });
       } catch (err: any) {
-        if (err?.status === 404) dataset = createSolidDataset();
-        else throw err;
+        if (err?.status === 404 || err?.statusCode === 404) {
+          console.log('Privacy mapping file does not exist, creating new...');
+          const created = await ensureFileExists(
+            mappingUrl,
+            EMPTY_PRIVACY_MAPPING_TTL,
+            'text/turtle',
+            session.info.webId!,
+            session.fetch
+          );
+          if (created) {
+            dataset = await getSolidDataset(mappingUrl, { fetch: session.fetch });
+          } else {
+            throw new Error('Could not create privacy mapping file');
+          }
+        } else {
+          throw err;
+        }
       }
 
       privacyMappings.forEach((mapping) => {
