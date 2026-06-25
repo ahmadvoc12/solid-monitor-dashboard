@@ -36,8 +36,6 @@ const RDF = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
 const SKOS = 'http://www.w3.org/2004/02/skos/core#';
 const SOTW = 'https://w3id.org/force/sotw#';
 const SCHEMA = 'https://schema.org/';
-const ACL = 'http://www.w3.org/ns/auth/acl#';
-const FOAF = 'http://xmlns.com/foaf/0.1/';
 
 const ACCESS_LOG_PATH = 'private/audit/access/access-log.ttl';
 const POLICY_PATH = 'private/audit/access/monitor-policy.ttl';
@@ -178,6 +176,23 @@ function toXsdDateTime(date: Date | string): string {
   return d.toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
+function getFirstValue(values: string[]): string {
+  return values[0] || '';
+}
+
+function resolvePrefixedIri(value: string): string {
+  const clean = cleanIRI(value);
+  if (!clean) return '';
+  if (clean.startsWith('schema:')) return `https://schema.org/${clean.replace('schema:', '')}`;
+  if (clean.startsWith('dct:')) return `http://purl.org/dc/terms/${clean.replace('dct:', '')}`;
+  if (clean.startsWith('dpv:')) return `https://w3id.org/dpv#${clean.replace('dpv:', '')}`;
+  if (clean.startsWith('report:')) return `https://w3id.org/force/compliance-report#${clean.replace('report:', '')}`;
+  if (clean.startsWith('ex:')) return `https://example.org/${clean.replace('ex:', '')}`;
+  if (clean.startsWith('odrl:')) return `http://www.w3.org/ns/odrl/2/${clean.replace('odrl:', '')}`;
+  if (clean.startsWith('prov:')) return `http://www.w3.org/ns/prov#${clean.replace('prov:', '')}`;
+  return clean;
+}
+
 type AccessedField = {
   fieldIri: string;
   fieldName: string;
@@ -301,137 +316,6 @@ function createDefaultConstraint(type: ConstraintType = 'count'): PolicyConstrai
   }
 }
 
-function getFirstValue(values: string[]): string {
-  return values[0] || '';
-}
-
-function getPodBaseUrl(webId: string): string {
-  try {
-    const url = new URL(webId);
-    const parts = url.pathname.split('/').filter(Boolean);
-    if (parts.length > 0) {
-      return `${url.origin}/${parts[0]}/`;
-    }
-    return `${url.origin}/`;
-  } catch {
-    return '';
-  }
-}
-
-async function ensureContainerWithAcl(
-  containerUrl: string,
-  webId: string,
-  fetchFn: typeof fetch
-): Promise<boolean> {
-  try {
-    const headRes = await fetchFn(containerUrl, {
-      method: 'HEAD',
-      headers: { 'Accept': 'text/turtle' },
-    });
-    if (headRes.ok) return true;
-  } catch {}
-
-  try {
-    const createRes = await fetchFn(containerUrl, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'text/turtle',
-        'Link': '<http://www.w3.org/ns/ldp#BasicContainer>; rel="type"',
-        'If-None-Match': '*',
-      },
-      body: '',
-    });
-    if (!createRes.ok && createRes.status !== 409) {
-      console.warn(`Failed to create container ${containerUrl}: ${createRes.status}`);
-      return false;
-    }
-  } catch (e) {
-    console.warn(`Error creating container ${containerUrl}:`, e);
-    return false;
-  }
-
-  try {
-    const aclUrl = containerUrl.endsWith('/') ? `${containerUrl}.acl` : `${containerUrl}.acl`;
-    const aclContent = `@prefix acl: <${ACL}> .
-@prefix foaf: <${FOAF}> .
-
-<#owner>
-    a acl:Authorization ;
-    acl:agent <${webId}> ;
-    acl:accessTo <${containerUrl}> ;
-    acl:default <${containerUrl}> ;
-    acl:mode acl:Read, acl:Write, acl:Control .
-
-<#authenticated>
-    a acl:Authorization ;
-    acl:agentClass foaf:AuthenticatedAgent ;
-    acl:accessTo <${containerUrl}> ;
-    acl:default <${containerUrl}> ;
-    acl:mode acl:Read, acl:Append .
-`;
-    const aclRes = await fetchFn(aclUrl, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'text/turtle' },
-      body: aclContent,
-    });
-    return aclRes.ok || aclRes.status === 409 || aclRes.status === 201;
-  } catch (e) {
-    console.warn(`Failed to create ACL for ${containerUrl}:`, e);
-    return false;
-  }
-}
-
-async function ensureFileExists(
-  fileUrl: string,
-  initialContent: string,
-  contentType: string,
-  webId: string,
-  fetchFn: typeof fetch
-): Promise<boolean> {
-  try {
-    const headRes = await fetchFn(fileUrl, { method: 'HEAD' });
-    if (headRes.ok) return true;
-  } catch {}
-
-  const parentUrl = fileUrl.substring(0, fileUrl.lastIndexOf('/') + 1);
-  await ensureContainerWithAcl(parentUrl, webId, fetchFn);
-
-  try {
-    const putRes = await fetchFn(fileUrl, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': contentType,
-        'If-None-Match': '*',
-      },
-      body: initialContent,
-    });
-    return putRes.ok || putRes.status === 201 || putRes.status === 409;
-  } catch (e) {
-    console.error(`Failed to create file ${fileUrl}:`, e);
-    return false;
-  }
-}
-
-const EMPTY_ACCESS_LOG_TTL = `@prefix ex: <https://example.org/> .
-@prefix prov: <http://www.w3.org/ns/prov#> .
-@prefix dpv: <https://w3id.org/dpv#> .
-@prefix dct: <http://purl.org/dc/terms/> .
-@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
-@prefix odrl: <http://www.w3.org/ns/odrl/2/> .
-@prefix report: <https://w3id.org/force/compliance-report#> .
-
-ex:access-log a prov:Collection .
-`;
-
-const EMPTY_PRIVACY_MAPPING_TTL = `@prefix ex: <https://example.org/privacy#> .
-@prefix dpv: <https://w3id.org/dpv#> .
-@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
-@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
-@prefix schema: <https://schema.org/> .
-@prefix dct: <http://purl.org/dc/terms/> .
-
-`;
-
 function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry | null {
   try {
     const types = getUrlAll(thing, `${RDF}type`);
@@ -480,7 +364,9 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
     if (fieldsBundle) {
       getThingAll(dataset).forEach((fieldThing: any) => {
         const fieldTypes = getUrlAll(fieldThing, `${RDF}type`);
-        if (!fieldTypes.some((t: string) => t.includes('AccessedDataField'))) return;
+        const isAccessedField = fieldTypes.some((t: string) => t.includes('AccessedDataField'));
+        if (!isAccessedField) return;
+        
         const belongsToBundle = getUrlAll(fieldThing, `${REPORT}belongsToBundle`)[0]
           ?? getUrlAll(fieldThing, `${EX}belongsToBundle`)[0];
         if (!bundlesMatch(belongsToBundle, fieldsBundle)) return;
@@ -502,15 +388,15 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
           || 'false';
         const isSensitive = isSensitiveStr.toLowerCase() === 'true';
         
-        const dataCategory = getFirstValue(getUrlAll(fieldThing, `${REPORT}dataCategory`))
+        const dataCategoryRaw = getFirstValue(getUrlAll(fieldThing, `${REPORT}dataCategory`))
           || getFirstValue(getUrlAll(fieldThing, `${EX}dataCategory`))
           || `${DPV}PersonalData`;
         
-        const personalDataType = getFirstValue(getUrlAll(fieldThing, `${REPORT}personalDataType`))
+        const personalDataTypeRaw = getFirstValue(getUrlAll(fieldThing, `${REPORT}personalDataType`))
           || getFirstValue(getUrlAll(fieldThing, `${EX}personalDataType`))
           || `${DPV}Data`;
 
-        const cleanFieldIri = cleanIRI(rawIri);
+        const cleanFieldIri = resolvePrefixedIri(rawIri);
         const finalFieldName = fieldNameFromRdf || getFieldLabel(cleanFieldIri);
 
         fields.push({
@@ -518,8 +404,8 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
           fieldName: finalFieldName,
           fieldValue,
           isSensitive,
-          dataCategory: cleanIRI(dataCategory),
-          personalDataType: cleanIRI(personalDataType),
+          dataCategory: resolvePrefixedIri(dataCategoryRaw),
+          personalDataType: resolvePrefixedIri(personalDataTypeRaw),
         });
       });
     }
@@ -567,7 +453,7 @@ function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry 
             );
             if (!fvThing) return;
 
-            const violatedField = cleanIRI(getFirstValue(getUrlAll(fvThing, `${REPORT}violatedField`)));
+            const violatedField = resolvePrefixedIri(getFirstValue(getUrlAll(fvThing, `${REPORT}violatedField`)));
             const violatedPolicy = cleanIRI(getFirstValue(getUrlAll(fvThing, `${REPORT}violatedPolicy`)));
             const violationType = getFirstValue(getStringNoLocaleAll(fvThing, `${REPORT}violationType`));
             const violationReason = getFirstValue(getStringNoLocaleAll(fvThing, `${REPORT}violationReason`));
@@ -721,6 +607,111 @@ function parsePrivacyMapping(thing: any): PrivacyMapping | null {
   }
 }
 
+/* ======================================================
+   ✅ FIXED: Helper to create privacy mapping TTL file directly
+   This avoids the "Undefined prefix" error from @inrupt/solid-client
+====================================================== */
+async function createPrivacyMappingFileDirectly(
+  podBaseUrl: string,
+  fetchFn: typeof fetch,
+  initialContent?: string
+): Promise<boolean> {
+  const mappingUrl = `${podBaseUrl}${PRIVACY_MAPPING_PATH}`;
+  const parentUrl = mappingUrl.substring(0, mappingUrl.lastIndexOf('/') + 1);
+  
+  try {
+    await fetchFn(parentUrl, { method: 'HEAD' });
+  } catch {
+    try {
+      await fetchFn(parentUrl, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'text/turtle',
+          'Link': '<http://www.w3.org/ns/ldp#BasicContainer>; rel="type"',
+          'If-None-Match': '*',
+        },
+        body: '',
+      });
+    } catch {}
+  }
+  
+  const content = initialContent || `@prefix ex: <https://example.org/privacy#> .
+@prefix dpv: <https://w3id.org/dpv#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix schema: <https://schema.org/> .
+@prefix dct: <http://purl.org/dc/terms/> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+
+`;
+  
+  try {
+    const res = await fetchFn(mappingUrl, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'text/turtle',
+        'If-None-Match': '*',
+      },
+      body: content,
+    });
+    return res.ok || res.status === 201 || res.status === 409 || res.status === 204;
+  } catch (e) {
+    console.error('Failed to create privacy mapping file:', e);
+    return false;
+  }
+}
+
+async function savePrivacyMappingsDirectly(
+  podBaseUrl: string,
+  fetchFn: typeof fetch,
+  mappings: PrivacyMapping[]
+): Promise<boolean> {
+  const mappingUrl = `${podBaseUrl}${PRIVACY_MAPPING_PATH}`;
+  
+  let content = `@prefix ex: <https://example.org/privacy#> .
+@prefix dpv: <https://w3id.org/dpv#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix schema: <https://schema.org/> .
+@prefix dct: <http://purl.org/dc/terms/> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+
+`;
+  
+  mappings.forEach(mapping => {
+    const shortName = schemaToExShort(mapping.fieldIri);
+    const subjectUrl = `ex:${shortName}`;
+    const dataCatIri = cleanIRI(mapping.dataCategory);
+    const pdtIri = cleanIRI(mapping.personalDataType);
+    
+    content += `${subjectUrl} a dpv:PersonalData ;
+    skos:prefLabel "${mapping.fieldLabel}" ;
+    dpv:hasPersonalData <${pdtIri}> ;
+    dpv:hasDataCategory <${dataCatIri}> .
+`;
+    if (mapping.domain) {
+      content += `${subjectUrl} ex:domain "${mapping.domain}" .
+`;
+    }
+    content += `
+`;
+  });
+  
+  try {
+    const res = await fetchFn(mappingUrl, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'text/turtle',
+      },
+      body: content,
+    });
+    return res.ok || res.status === 201 || res.status === 204;
+  } catch (e) {
+    console.error('Failed to save privacy mappings directly:', e);
+    return false;
+  }
+}
+
 export default function AuditDashboardPage() {
   const { session, isLoggedIn } = useSolidSession();
   const router = useRouter();
@@ -789,29 +780,11 @@ export default function AuditDashboardPage() {
         dataset = await getSolidDataset(accessLogUrl, { fetch: session.fetch });
       } catch (err: any) {
         if (err?.status === 404 || err?.statusCode === 404) {
-          console.log('Access log not found, creating empty one...');
-          const created = await ensureFileExists(
-            accessLogUrl,
-            EMPTY_ACCESS_LOG_TTL,
-            'text/turtle',
-            session.info.webId!,
-            session.fetch
-          );
-          if (created) {
-            dataset = await getSolidDataset(accessLogUrl, { fetch: session.fetch });
-          } else {
-            setLogs([]);
-            toast({
-              title: 'Warning',
-              description: 'Access log file created. Refresh to load.',
-              status: 'info',
-              duration: 3000,
-            });
-            return;
-          }
-        } else {
-          throw err;
+          console.log('Access log not found');
+          setLogs([]);
+          return;
         }
+        throw err;
       }
 
       if (!dataset || typeof dataset !== 'object') { setLogs([]); return; }
@@ -860,35 +833,19 @@ export default function AuditDashboardPage() {
         dataset = await getSolidDataset(sotwUrl, { fetch: session.fetch });
       } catch (error: any) {
         if (error?.status === 404 || error?.statusCode === 404) {
-          const created = await ensureFileExists(
-            sotwUrl,
-            `@prefix ex: <https://example.org/> .
-@prefix sotw: <https://w3id.org/force/sotw#> .
-@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
-@prefix odrl: <http://www.w3.org/ns/odrl/2/> .
-
-ex:sotw-current a sotw:SotW ;
-    sotw:currentTime "${new Date().toISOString()}"^^xsd:dateTime ;
-    sotw:currentLocation <https://www.iso.org/obp/ui/#iso:code:3166:ID> .
-`,
-            'text/turtle',
-            session.info.webId!,
-            session.fetch
-          );
-          if (created) {
-            dataset = await getSolidDataset(sotwUrl, { fetch: session.fetch });
-          } else {
-            setSotwData({
-              id: 'fallback',
-              currentTime: new Date(),
-              currentLocation: 'Unknown',
-              counts: [],
-            });
-            return;
-          }
-        } else {
-          throw error;
+          setSotwData({
+            id: 'fallback',
+            currentTime: new Date(),
+            currentLocation: 'Unknown',
+            counts: Object.entries(FIELD_LABELS).map(([iri]) => ({
+              targetField: shortIri(iri),
+              targetIRI: cleanIRI(iri),
+              countValue: 0,
+            })),
+          });
+          return;
         }
+        throw error;
       }
 
       let sotwEntry: StateOfTheWorld | null = null;
@@ -1027,7 +984,7 @@ ex:sotw-current a sotw:SotW ;
       });
       setPolicies(parsed);
       console.log('✅ Loaded policies:', parsed.length);
-    } catch (err: any) {
+    } catch (err) {
       console.error('Failed to load policies:', err);
       setPolicies([
         {
@@ -1049,6 +1006,9 @@ ex:sotw-current a sotw:SotW ;
 
   useEffect(() => { loadPolicies(); }, [session]);
 
+  /* ======================================================
+     ✅ FIXED: loadPrivacyMappings - with fallback for missing file
+  ====================================================== */
   const loadPrivacyMappings = async () => {
     if (!session?.info?.webId) return;
     setLoadingPrivacy(true);
@@ -1062,30 +1022,22 @@ ex:sotw-current a sotw:SotW ;
         dataset = await getSolidDataset(mappingUrl, { fetch: session.fetch });
       } catch (e: any) {
         if (e?.status === 404 || e?.statusCode === 404) {
-          console.log('Privacy mapping not found, creating new one...');
-          const created = await ensureFileExists(
-            mappingUrl,
-            EMPTY_PRIVACY_MAPPING_TTL,
-            'text/turtle',
-            session.info.webId!,
-            session.fetch
-          );
-          if (created) {
-            dataset = await getSolidDataset(mappingUrl, { fetch: session.fetch });
-          } else {
-            setPrivacyMappings(Object.entries(FIELD_LABELS).map(([iri, label]) => ({
-              fieldIri: cleanIRI(iri),
-              fieldLabel: label,
-              isSensitive: false,
-              dataCategory: `${DPV}PersonalData`,
-              personalDataType: `${DPV}Data`,
-              domain: cleanIRI(iri).split('/').pop()?.split('#').pop(),
-            })));
-            return;
+          console.log('Privacy mapping not found, creating...');
+          const created = await createPrivacyMappingFileDirectly(podBaseUrl, session.fetch);
+          if (!created) {
+            console.warn('Could not create privacy mapping file');
           }
-        } else {
-          throw e;
+          setPrivacyMappings(Object.entries(FIELD_LABELS).map(([iri, label]) => ({
+            fieldIri: cleanIRI(iri),
+            fieldLabel: label,
+            isSensitive: false,
+            dataCategory: `${DPV}PersonalData`,
+            personalDataType: `${DPV}Data`,
+            domain: cleanIRI(iri).split('/').pop()?.split('#').pop(),
+          })));
+          return;
         }
+        throw e;
       }
 
       const savedMappings: PrivacyMapping[] = [];
@@ -1274,56 +1226,25 @@ ex:sotw-current a sotw:SotW ;
     }
   };
 
+  /* ======================================================
+     ✅ FIXED: savePrivacyMappings - use direct TTL write
+     This avoids the "Undefined prefix schema:" error
+  ====================================================== */
   const savePrivacyMappings = async () => {
     if (!session?.info?.webId) return;
     try {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
       const podBaseUrl = podUrls[0];
-      const mappingUrl = `${podBaseUrl}${PRIVACY_MAPPING_PATH}`;
-
-      let dataset: SolidDataset;
-      try {
-        dataset = await getSolidDataset(mappingUrl, { fetch: session.fetch });
-      } catch (err: any) {
-        if (err?.status === 404 || err?.statusCode === 404) {
-          console.log('Privacy mapping file does not exist, creating new...');
-          const created = await ensureFileExists(
-            mappingUrl,
-            EMPTY_PRIVACY_MAPPING_TTL,
-            'text/turtle',
-            session.info.webId!,
-            session.fetch
-          );
-          if (created) {
-            dataset = await getSolidDataset(mappingUrl, { fetch: session.fetch });
-          } else {
-            throw new Error('Could not create privacy mapping file');
-          }
-        } else {
-          throw err;
-        }
+      
+      const success = await savePrivacyMappingsDirectly(podBaseUrl, session.fetch, privacyMappings);
+      
+      if (success) {
+        toast({ title: 'Success', description: 'Privacy settings saved', status: 'success' });
+        await loadPrivacyMappings();
+        onPrivacyModalClose();
+      } else {
+        throw new Error('Failed to write privacy mappings file');
       }
-
-      privacyMappings.forEach((mapping) => {
-        const shortName = schemaToExShort(mapping.fieldIri);
-        const subjectUrl = `${EX}${shortName}`;
-
-        let thing = getThingAll(dataset).find((t: any) => cleanIRI(t.url) === cleanIRI(subjectUrl));
-        if (!thing) thing = createThing({ url: subjectUrl });
-
-        thing = setUrl(thing, `${RDF}type`, `${DPV}PersonalData`);
-        thing = setStringNoLocale(thing, `${SKOS}prefLabel`, mapping.fieldLabel);
-        thing = setUrl(thing, `${DPV}hasPersonalData`, cleanIRI(mapping.personalDataType));
-        thing = setUrl(thing, `${DPV}hasDataCategory`, cleanIRI(mapping.dataCategory));
-        if (mapping.domain) thing = setStringNoLocale(thing, `${EX}domain`, mapping.domain);
-
-        dataset = setThing(dataset, thing);
-      });
-
-      await saveSolidDatasetAt(mappingUrl, dataset, { fetch: session.fetch });
-      toast({ title: 'Success', description: 'Privacy settings saved', status: 'success' });
-      await loadPrivacyMappings();
-      onPrivacyModalClose();
     } catch (err: any) {
       console.error('Failed to save privacy mappings:', err);
       toast({
