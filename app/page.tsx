@@ -1305,6 +1305,7 @@ export default function AuditDashboardPage() {
     }
   };
 
+  /* ✅ FIXED: deletePolicy - Changed 'const dataset' to 'let dataset' */
   const deletePolicy = async (policy: Policy) => {
     if (!session?.info?.webId) return;
     if (!window.confirm(`Are you sure you want to delete policy "${policy.title}"?`)) return;
@@ -1312,7 +1313,9 @@ export default function AuditDashboardPage() {
     try {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
       const policyUrl = `${podUrls[0]}${POLICY_PATH}`;
-      const dataset = await getSolidDataset(policyUrl, { fetch: session.fetch });
+      
+      // ✅ FIX: Changed 'const' to 'let' so dataset can be reassigned
+      let dataset = await getSolidDataset(policyUrl, { fetch: session.fetch });
 
       const allThings = getThingAll(dataset);
       const policyThing = allThings.find(t => cleanIRI(t.url) === cleanIRI(policy.id));
@@ -2035,7 +2038,6 @@ export default function AuditDashboardPage() {
         </ModalContent>
       </Modal>
 
-      {/* ✅ FIXED: Policy Settings Modal - now includes existing policies table */}
       <Modal isOpen={isPolicyModalOpen} onClose={onPolicyModalClose} size="6xl">
         <ModalOverlay />
         <ModalContent bg="white" color="gray.800" maxH="90vh">
@@ -2052,7 +2054,6 @@ export default function AuditDashboardPage() {
           </ModalHeader>
           <ModalCloseButton />
           <ModalBody pb={6} overflowY="auto">
-            {/* ✅ Add/Edit Policy Form */}
             <Accordion allowToggle defaultIndex={editingPolicy ? 0 : -1} mb={6}>
               <AccordionItem>
                 <AccordionButton _hover={{ bg: 'gray.50' }}>
@@ -2324,7 +2325,6 @@ export default function AuditDashboardPage() {
               </AccordionItem>
             </Accordion>
 
-            {/* ✅ FIXED: Existing Policies Table - now visible in modal */}
             <Box mt={4}>
               <Flex justify="space-between" align="center" mb={3}>
                 <Text fontWeight="bold" fontSize="lg">📋 Existing Policies</Text>
