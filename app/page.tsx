@@ -68,29 +68,101 @@ const ACTION_HIERARCHY: Record<string, string | null> = {
   [`${ODRL}transfer`]: null,
 };
 
+/* ======================================================
+   ✅ FIXED: Robust blank node matching with multiple fallback strategies
+   Blank node URLs like _:b397_b352_...-abc1-permission have unstable prefixes
+   but stable suffixes like -abc1-permission, -abc1-constraint-count
+====================================================== */
 function findThingInDataset(dataset: SolidDataset, url: string): Thing | undefined {
+  const normalizedUrl = url.trim();
+  if (!normalizedUrl) return undefined;
+
+  // Strategy 1: Direct lookup (works for non-blank nodes)
   try {
-    const thing = getThing(dataset, url);
+    const thing = getThing(dataset, normalizedUrl);
     if (thing) return thing;
   } catch {}
 
   const allThings = getThingAll(dataset);
-  const normalizedUrl = url.trim();
 
-  return allThings.find(t => {
-    const tUrl = t.url.trim();
-    if (tUrl === normalizedUrl) return true;
-    if (cleanIRI(tUrl) === cleanIRI(normalizedUrl)) return true;
-    const tBlank = tUrl.replace(/^_:\s*/, '').replace(/\s+/g, '');
-    const uBlank = normalizedUrl.replace(/^_:\s*/, '').replace(/\s+/g, '');
-    if (tBlank && uBlank && tBlank === uBlank) return true;
-    if (tUrl.includes('-') && normalizedUrl.includes('-')) {
-      const tSuffix = tUrl.split('-').slice(-2).join('-');
-      const uSuffix = normalizedUrl.split('-').slice(-2).join('-');
-      if (tSuffix === uSuffix) return true;
+  // Strategy 2: Exact URL match
+  const exactMatch = allThings.find(t => t.url.trim() === normalizedUrl);
+  if (exactMatch) return exactMatch;
+
+  // Strategy 3: Clean IRI match (handles angle brackets, whitespace)
+  const cleanTarget = cleanIRI(normalizedUrl);
+  const cleanMatch = allThings.find(t => cleanIRI(t.url) === cleanTarget);
+  if (cleanMatch) return cleanMatch;
+
+  // Strategy 4: Blank node matching (the key fix!)
+  if (normalizedUrl.includes('_:')) {
+    // Extract the meaningful suffix pattern
+    // Examples:
+    //   _:b397_b352_...-abc1-permission → -abc1-permission
+    //   _:b397_...-abc1-constraint-count → -abc1-constraint-count
+    //   _:b397_...-abc1-constraint-temporal → -abc1-constraint-temporal
+    
+    // 4a: Match by the last distinctive segment (e.g., "abc1-permission")
+    const lastSegmentMatch = normalizedUrl.match(/-([a-z0-9]+-(?:permission|prohibition|constraint-[a-z]+))$/i);
+    if (lastSegmentMatch) {
+      const suffix = '-' + lastSegmentMatch[1];
+      const suffixFound = allThings.find(t => t.url.endsWith(suffix));
+      if (suffixFound) {
+        console.log(`🔗 Blank node matched via suffix: ${normalizedUrl} → ${suffixFound.url}`);
+        return suffixFound;
+      }
     }
-    return false;
-  });
+
+    // 4b: Match by last 2 segments (e.g., "abc1-constraint-count")
+    const segments = normalizedUrl.split('-');
+    if (segments.length >= 2) {
+      const lastTwo = segments.slice(-2).join('-');
+      const segmentFound = allThings.find(t => {
+        const tSegments = t.url.split('-');
+        const tLastTwo = tSegments.slice(-2).join('-');
+        return tLastTwo === lastTwo;
+      });
+      if (segmentFound) {
+        console.log(`🔗 Blank node matched via last 2 segments: ${normalizedUrl} → ${segmentFound.url}`);
+        return segmentFound;
+      }
+    }
+
+    // 4c: Match by the "name" part (e.g., "abc1")
+    const nameMatch = normalizedUrl.match(/-([a-z0-9]+)-(?:permission|prohibition|constraint)/i);
+    if (nameMatch) {
+      const name = nameMatch[1];
+      const nameFound = allThings.find(t => t.url.includes(`-${name}-`));
+      if (nameFound) {
+        console.log(`🔗 Blank node matched via name: ${normalizedUrl} → ${nameFound.url}`);
+        return nameFound;
+      }
+    }
+
+    // 4d: Match by constraint type suffix (e.g., "constraint-count", "constraint-temporal")
+    const typeMatch = normalizedUrl.match(/constraint-([a-z]+)$/i);
+    if (typeMatch) {
+      const type = typeMatch[1];
+      const typeFound = allThings.find(t => t.url.includes(`constraint-${type}`));
+      if (typeFound) {
+        console.log(`🔗 Blank node matched via constraint type: ${normalizedUrl} → ${typeFound.url}`);
+        return typeFound;
+      }
+    }
+
+    // 4e: Last resort - match by any shared segment of 3+ chars
+    const urlSegments = normalizedUrl.split(/[-_:]/).filter(s => s.length >= 3);
+    for (const segment of urlSegments) {
+      const found = allThings.find(t => t.url.includes(segment));
+      if (found && (found.url.includes('permission') || found.url.includes('constraint') || found.url.includes('prohibition'))) {
+        console.log(`🔗 Blank node matched via shared segment: ${normalizedUrl} → ${found.url}`);
+        return found;
+      }
+    }
+  }
+
+  console.warn(`❌ Thing not found for URL: ${normalizedUrl}`);
+  return undefined;
 }
 
 function normalizeAction(actionIri: string): string {
@@ -369,6 +441,68 @@ function createDefaultConstraint(type: ConstraintType = 'count'): PolicyConstrai
     default:
       return { type: 'count', operator: 'lteq', value: 1 };
   }
+}
+
+/* ======================================================
+   ✅ Helper: Parse a single constraint thing into PolicyConstraint
+   Handles all constraint types: count, recipient, temporal, location, timeWindow
+====================================================== */
+function parseConstraintThing(cThing: Thing): PolicyConstraint | null {
+  const leftOperand = cleanIRI(getUrlAll(cThing, `${ODRL}leftOperand`)[0] || '');
+  const op = cleanIRI(getUrlAll(cThing, `${ODRL}operator`)[0] || '');
+
+  const rightOperandStr = getStringNoLocaleAll(cThing, `${ODRL}rightOperand`)[0];
+  const rightOperandInt = getInteger(cThing, `${ODRL}rightOperand`);
+  const rightOperandIri = getUrlAll(cThing, `${ODRL}rightOperand`)[0];
+  const rightOperandDatetime = getDatetime(cThing, `${ODRL}rightOperand`);
+
+  console.log(`🔍 Parsing constraint thing ${cThing.url}:`, {
+    leftOperand, op, rightOperandStr, rightOperandInt, rightOperandIri,
+    hasDatetime: !!rightOperandDatetime
+  });
+
+  if (leftOperand.includes('count')) {
+    return {
+      type: 'count',
+      operator: (op.includes('lteq') ? 'lteq' : op.includes('gteq') ? 'gteq' : 'eq') as ConstraintOperator,
+      value: rightOperandInt ?? 0,
+    };
+  }
+  else if (leftOperand.includes('assignee') || leftOperand.includes('recipient')) {
+    const recipientValue = rightOperandIri || rightOperandStr || '';
+    return {
+      type: 'recipient',
+      operator: 'eq' as ConstraintOperator,
+      value: cleanIRI(recipientValue),
+    };
+  }
+  else if (leftOperand.includes('dateTime') || leftOperand.includes('date')) {
+    const dateValue = rightOperandDatetime
+      ? rightOperandDatetime.toISOString()
+      : (rightOperandStr || '');
+    return {
+      type: 'temporal',
+      operator: (op.includes('lteq') ? 'lteq' : op.includes('gteq') ? 'gteq' : 'eq') as ConstraintOperator,
+      value: dateValue,
+    };
+  }
+  else if (leftOperand.includes('spatial')) {
+    return {
+      type: 'location',
+      operator: 'eq' as ConstraintOperator,
+      value: rightOperandStr || '',
+    };
+  }
+  else if (leftOperand.includes('timeWindow')) {
+    return {
+      type: 'timeWindow',
+      operator: (op.includes('lteq') ? 'lteq' : op.includes('gteq') ? 'gteq' : 'eq') as ConstraintOperator,
+      value: rightOperandInt ?? 24,
+    };
+  }
+
+  console.warn(`⚠️ Unknown constraint type for leftOperand: ${leftOperand}`);
+  return null;
 }
 
 function parseAccessLogEntry(thing: any, dataset: SolidDataset): AccessLogEntry | null {
@@ -925,6 +1059,10 @@ export default function AuditDashboardPage() {
 
   useEffect(() => { loadStateOfTheWorld(); }, [session]);
 
+  /* ======================================================
+     ✅ FIXED: loadPolicies with robust blank node matching
+     Now properly handles multi-constraint policies
+====================================================== */
   const loadPolicies = async () => {
     if (!session?.info?.webId) return;
     setLoadingPolicies(true);
@@ -935,6 +1073,7 @@ export default function AuditDashboardPage() {
       const parsed: Policy[] = [];
 
       const allThings = getThingAll(dataset);
+      console.log(`📦 Total things in policy dataset: ${allThings.length}`);
 
       allThings.forEach((thing: any) => {
         const types = getUrlAll(thing, `${RDF}type`);
@@ -953,9 +1092,14 @@ export default function AuditDashboardPage() {
         const constraints: PolicyConstraint[] = [];
 
         const permissions = getUrlAll(thing, `${ODRL}permission`);
+        console.log(`📋 Policy "${title}" has ${permissions.length} permission(s):`, permissions);
+
         permissions.forEach((permUrl: string) => {
           const permThing = findThingInDataset(dataset, permUrl);
           if (permThing) {
+            console.log(`✅ Found permission thing: ${permThing.url}`);
+            
+            // Parse actions
             const actionUrls = getUrlAll(permThing, `${ODRL}action`);
             actionUrls.forEach((action: string) => {
               const normalized = normalizeAction(action);
@@ -964,7 +1108,10 @@ export default function AuditDashboardPage() {
               }
             });
 
+            // Parse ALL constraints (supports multi-constraint)
             const constraintUrls = getUrlAll(permThing, `${ODRL}constraint`);
+            console.log(`🔍 Permission has ${constraintUrls.length} constraint URL(s):`, constraintUrls);
+            
             constraintUrls.forEach((cUrl: string) => {
               const cThing = findThingInDataset(dataset, cUrl);
               if (!cThing) {
@@ -972,61 +1119,10 @@ export default function AuditDashboardPage() {
                 return;
               }
 
-              const leftOperand = cleanIRI(getUrlAll(cThing, `${ODRL}leftOperand`)[0] || '');
-              const op = cleanIRI(getUrlAll(cThing, `${ODRL}operator`)[0] || '');
-
-              const rightOperandStr = getStringNoLocaleAll(cThing, `${ODRL}rightOperand`)[0];
-              const rightOperandInt = getInteger(cThing, `${ODRL}rightOperand`);
-              const rightOperandIri = getUrlAll(cThing, `${ODRL}rightOperand`)[0];
-              const rightOperandDatetime = getDatetime(cThing, `${ODRL}rightOperand`);
-
-              let constraint: PolicyConstraint | null = null;
-
-              if (leftOperand.includes('count')) {
-                constraint = {
-                  type: 'count',
-                  operator: (op.includes('lteq') ? 'lteq' : op.includes('gteq') ? 'gteq' : 'eq') as ConstraintOperator,
-                  value: rightOperandInt ?? 0,
-                };
-              }
-              else if (leftOperand.includes('assignee') || leftOperand.includes('recipient')) {
-                const recipientValue = rightOperandIri || rightOperandStr || '';
-                constraint = {
-                  type: 'recipient',
-                  operator: 'eq' as ConstraintOperator,
-                  value: cleanIRI(recipientValue),
-                };
-              }
-              else if (leftOperand.includes('dateTime') || leftOperand.includes('date')) {
-                const dateValue = rightOperandDatetime
-                  ? rightOperandDatetime.toISOString()
-                  : (rightOperandStr || '');
-                constraint = {
-                  type: 'temporal',
-                  operator: (op.includes('lteq') ? 'lteq' : op.includes('gteq') ? 'gteq' : 'eq') as ConstraintOperator,
-                  value: dateValue,
-                };
-              }
-              else if (leftOperand.includes('spatial')) {
-                constraint = {
-                  type: 'location',
-                  operator: 'eq' as ConstraintOperator,
-                  value: rightOperandStr || '',
-                };
-              }
-              else if (leftOperand.includes('timeWindow')) {
-                constraint = {
-                  type: 'timeWindow',
-                  operator: (op.includes('lteq') ? 'lteq' : op.includes('gteq') ? 'gteq' : 'eq') as ConstraintOperator,
-                  value: rightOperandInt ?? 24,
-                };
-              }
-
+              const constraint = parseConstraintThing(cThing);
               if (constraint) {
                 constraints.push(constraint);
                 console.log(`✅ Parsed constraint:`, constraint);
-              } else {
-                console.warn(`⚠️ Unknown constraint type for leftOperand: ${leftOperand}`);
               }
             });
           } else {
@@ -1069,7 +1165,7 @@ export default function AuditDashboardPage() {
         });
       });
       setPolicies(parsed);
-      console.log('✅ Loaded policies:', parsed.length);
+      console.log(`✅ Loaded ${parsed.length} policies`);
     } catch (err) {
       console.error('Failed to load policies:', err);
       setPolicies([]);
@@ -1305,7 +1401,6 @@ export default function AuditDashboardPage() {
     }
   };
 
-  /* ✅ FIXED: deletePolicy - Changed 'const dataset' to 'let dataset' */
   const deletePolicy = async (policy: Policy) => {
     if (!session?.info?.webId) return;
     if (!window.confirm(`Are you sure you want to delete policy "${policy.title}"?`)) return;
@@ -1314,7 +1409,6 @@ export default function AuditDashboardPage() {
       const podUrls = await getPodUrlAll(session.info.webId!, { fetch: session.fetch });
       const policyUrl = `${podUrls[0]}${POLICY_PATH}`;
       
-      // ✅ FIX: Changed 'const' to 'let' so dataset can be reassigned
       let dataset = await getSolidDataset(policyUrl, { fetch: session.fetch });
 
       const allThings = getThingAll(dataset);
