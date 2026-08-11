@@ -9,6 +9,7 @@ import Footer from '@/components/footer/FooterAdmin';
 import Navbar from '@/components/navbar/NavbarAdmin';
 import { getActiveRoute, getActiveNavbar } from '@/utils/navigation';
 import { usePathname } from 'next/navigation';
+import { SpeedInsights } from '@vercel/speed-insights/next';
 import '@/styles/App.css';
 import '@/styles/Contact.css';
 import '@/styles/Plugins.css';
@@ -48,6 +49,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </SolidSessionProvider>
           </ChakraProvider>
         </AppWrappers>
+        <SpeedInsights />
       </body>
     </html>
   );
